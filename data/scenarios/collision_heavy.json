@@ -1,0 +1,14 @@
+{
+  "sections": [
+    { "id": "S1", "headway_seconds": 120, "traverse_seconds": 100 },
+    { "id": "S2", "headway_seconds": 120, "traverse_seconds": 120 }
+  ],
+  "trains": [
+    { "id": "A", "priority": 3, "planned_departure": 0,   "route_sections": ["S1", "S2"], "current_delay_minutes": 3 },
+    { "id": "B", "priority": 2, "planned_departure": 30,  "route_sections": ["S1", "S2"], "current_delay_minutes": 5 },
+    { "id": "C", "priority": 1, "planned_departure": 60,  "route_sections": ["S1", "S2"], "current_delay_minutes": 4 },
+    { "id": "D", "priority": 2, "planned_departure": 90,  "route_sections": ["S1"],       "current_delay_minutes": 6 },
+    { "id": "E", "priority": 1, "planned_departure": 120, "route_sections": ["S1", "S2"], "current_delay_minutes": 2 },
+    { "id": "F", "priority": 3, "planned_departure": 150, "route_sections": ["S1"],       "current_delay_minutes": 7 }
+  ]
+}

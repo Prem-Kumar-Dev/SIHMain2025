@@ -196,3 +196,37 @@ Next Steps (Optional)
 - Improve prediction quality by generating more training samples (e.g., N=3000) and training longer.
 - Enhance live mapping fidelity to real RailRadar schema.
 - Explore a true graph model (PyG) replacing the stub path.
+
+---
+
+## Checkpoint 2025-09-18 (v0.9.1 - One-click run, collision demo, UI fixes)
+
+Summary
+- Added an all-in-one launcher and stop scripts to bring up API + Streamlit with minimal effort, ensure the model exists, and optionally run a collision demo.
+- Introduced a collision-heavy scenario JSON, an integration test asserting headway compliance after resolution, and a PowerShell demo script.
+- Resolved Streamlit import issues by setting `PYTHONPATH` in the launcher and adding safe `sys.path` guards in UI modules; fixed a `from __future__` placement SyntaxError.
+
+Key Changes
+- `scripts/run_all.ps1`:
+  - Sets up `.venv`, installs requirements, ensures `data/delay_model.pt` (calls trainer if missing), starts API and UI (new windows by default), waits for API readiness, sets `API_BASE` for UI, opens browser tabs, and optionally runs the collision demo.
+  - Robust env handling for child processes; fixes prior interpolation issues by using a formatted child script with escaped braces.
+  - Auto-detects if `UiPort` is busy and bumps to the next free port.
+- `scripts/stop_all.ps1`: Stops API/UI by port with safe fallbacks.
+- `data/scenarios/collision_heavy.json`: Dense departures to induce conflicts.
+- `tests/test_collision_resolution.py`: Calls `/predict` then `/resolve`; asserts ≥1 conflict initially and checks resolved schedule respects per-section headways.
+- `scripts/run_collision_demo.ps1`: Prints predicted conflict count, runs resolve, prints KPIs, and warns if any headway is violated.
+- UI import reliability:
+  - `scripts/run_all.ps1` sets `PYTHONPATH` for Streamlit.
+  - Added small `sys.path` bootstraps to `ui/app.py`, `ui/pages/1_Live_Dashboard.py`, `ui/pages/2_Scenario_Analysis.py`, and `ui` modules (`api_client.py`, `state_manager.py`, components) to tolerate varying launch contexts.
+  - Fixed `SyntaxError` by moving `from __future__ import annotations` to the top of `ui/state_manager.py`.
+- Docs: `readme.md` now includes "Run everything (one command)" and a "Collision-heavy demo and tests" section.
+
+Quick Demo (PowerShell)
+```
+./scripts/run_all.ps1 -HostApi 127.0.0.1 -PortApi 8000 -UiPort 8501 -RunDemo -OpenBrowser -UseNewWindows
+```
+This launches API and UI, opens docs/UI, and runs the collision demo. If 8501 is in use, the script auto-selects the next free port.
+
+Notes / Next
+- Consider adding a `.bat` wrapper for double-click launching with preferred flags.
+- Optional: convert the integration test to use FastAPI TestClient for in-process testing (no running server required).

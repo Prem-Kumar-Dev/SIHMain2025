@@ -38,3 +38,18 @@
 {"type": "kpis", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 100.0, "otp_tolerance_used": 300}, "count": 2}
 {"type": "kpis", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 100.0, "otp_tolerance_used": 300}, "count": 2}
 {"type": "kpis", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 100.0, "otp_tolerance_used": 300}, "count": 2}
+{"type": "whatif", "solver": "greedy", "count": 6}
+{"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "whatif", "solver": "milp", "count": 6}
+{"type": "kpis", "solver": "milp", "kpis": {"total_trains": 3, "makespan": 1380, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "whatif", "solver": "milp", "count": 6}
+{"type": "kpis", "solver": "milp", "kpis": {"total_trains": 3, "makespan": 1380, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "milp", "kpis": {"total_trains": 3, "makespan": 1380, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "whatif", "solver": "milp", "count": 6}
+{"type": "kpis", "solver": "milp", "kpis": {"total_trains": 3, "makespan": 1380, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 3, "makespan": 1500, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 6}

@@ -101,6 +101,50 @@ Related endpoints:
 - `POST /resolve?solver=milp&otp_tolerance=300`
   - Input: `{ state, predicted_conflicts }` where `state` is `{ sections, trains }` and conflicts are from `/predict`.
   - Output: `{ kpis, schedule }` for the reduced instance covering only trains and sections involved in conflicts.
+
+### Collision-heavy demo and tests
+
+We include a synthetic scenario that induces multiple conflicts to showcase prediction and resolution:
+
+- Scenario file: `data/scenarios/collision_heavy.json`
+- Pytest: `tests/test_collision_resolution.py` (assumes API running at `http://127.0.0.1:8000`; override with env var `API_BASE`)
+- Demo script (PowerShell): `scripts/run_collision_demo.ps1`
+
+Usage (Windows PowerShell):
+
+1) Ensure the API is running in a separate terminal
+```powershell
+uvicorn src.api:app --reload --host 127.0.0.1 --port 8000
+```
+
+2) Run the demo script
+```powershell
+./scripts/run_collision_demo.ps1 -ApiBase http://127.0.0.1:8000
+```
+This prints predicted conflict counts, resolves the schedule, shows basic KPIs, and warns if any section headway is violated.
+
+3) Run the pytest
+```powershell
+pip install pytest; pytest -q tests/test_collision_resolution.py
+```
+The test first calls `/predict` and asserts conflicts exist, then calls `/resolve` and asserts the returned schedule respects per-section headway constraints.
+
+## Run everything (one command)
+
+We provide helper scripts to bring up the full stack (API + Streamlit UI) and optionally run the collision demo:
+
+```powershell
+# From repo root
+./scripts/run_all.ps1 -HostApi 127.0.0.1 -PortApi 8000 -UiPort 8501 -RunDemo -OpenBrowser -UseNewWindows
+
+# Later, to stop servers
+./scripts/stop_all.ps1 -PortApi 8000 -UiPort 8501
+```
+
+Notes:
+- The script will create `.venv`, install `requirements.txt`, and train a delay model if `data/delay_model.pt` is missing (requires `scripts/train_delay_model.ps1`). Use `-SkipTrainModel` to skip training.
+- `-UseNewWindows` starts API and UI in separate PowerShell windows; omit it to run them as background processes.
+- `-RunDemo` executes the collision demo after the API is up.
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.
 - Add disruption handling and rapid re-optimization.
