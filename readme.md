@@ -51,6 +51,11 @@ Create `.streamlit/secrets.toml` with:
 API_BASE = "http://localhost:8000"
 ```
 
+The UI includes a Scenarios panel:
+- Save a scenario from the JSON editor to SQLite.
+- List scenarios and run a selected scenario via the API.
+- View recent runs for a scenario and inspect full run details.
+
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.
 - Add disruption handling and rapid re-optimization.

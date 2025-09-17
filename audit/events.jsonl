@@ -3,3 +3,4 @@
 {"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0}, "count": 2}
 {"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0}, "count": 2}
 {"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0}, "count": 2}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0}, "count": 2}
