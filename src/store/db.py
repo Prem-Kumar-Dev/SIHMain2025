@@ -96,3 +96,40 @@ def list_runs_by_scenario(sid: int) -> List[Dict[str, Any]]:
     with _conn() as conn:
         rows = conn.execute("SELECT id, solver, created_at FROM runs WHERE scenario_id=? ORDER BY id DESC", (sid,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def update_scenario(sid: int, name: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> bool:
+    sets = []
+    args: List[Any] = []
+    if name is not None:
+        sets.append("name=?")
+        args.append(name)
+    if payload is not None:
+        sets.append("payload=?")
+        args.append(json.dumps(payload, ensure_ascii=False))
+    if not sets:
+        return False
+    args.append(sid)
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE scenarios SET {', '.join(sets)} WHERE id=?", tuple(args))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_run(rid: int) -> bool:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM runs WHERE id=?", (rid,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_scenario(sid: int) -> bool:
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Delete runs first, then scenario
+        cur.execute("DELETE FROM runs WHERE scenario_id=?", (sid,))
+        cur.execute("DELETE FROM scenarios WHERE id=?", (sid,))
+        conn.commit()
+        return cur.rowcount > 0

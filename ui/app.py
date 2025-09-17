@@ -118,10 +118,50 @@ if selected_sid_str != "-":
             runs = rl.json().get("items", [])
             st.subheader("Runs for Scenario")
             st.dataframe(runs)
+            col_r1, col_r2, col_r3 = st.columns(3)
+            with col_r1:
+                del_scn = st.button("Delete Scenario", type="secondary")
+            with col_r2:
+                del_run = st.button("Delete Latest Run")
+            with col_r3:
+                export_csv = st.button("Download Latest Run CSV")
             # Optionally fetch details for the first run
             if runs:
                 rid = runs[0].get("id")
                 rd = client.get(f"{API_BASE}/runs/{rid}")
                 if rd.status_code == 200:
                     st.subheader("Latest Run (Full Details)")
-                    st.json(rd.json().get("run"))
+                    run_full = rd.json().get("run")
+                    st.json(run_full)
+                    # Actions
+                    if del_run:
+                        rr = client.delete(f"{API_BASE}/runs/{rid}")
+                        if rr.status_code == 200 and rr.json().get("deleted"):
+                            st.success("Latest run deleted. Click Refresh List.")
+                        else:
+                            st.error("Failed to delete run")
+                    if del_scn:
+                        rsd = client.delete(f"{API_BASE}/scenarios/{sid}")
+                        if rsd.status_code == 200 and rsd.json().get("deleted"):
+                            st.success("Scenario deleted. Click Refresh List.")
+                        else:
+                            st.error("Failed to delete scenario")
+                    if export_csv:
+                        # Build CSV from schedule
+                        import io, csv
+                        buf = io.StringIO()
+                        writer = csv.DictWriter(buf, fieldnames=["train_id", "section_id", "entry", "exit"])
+                        writer.writeheader()
+                        for row in run_full.get("schedule", []):
+                            writer.writerow({
+                                "train_id": row.get("train_id"),
+                                "section_id": row.get("section_id"),
+                                "entry": row.get("entry"),
+                                "exit": row.get("exit"),
+                            })
+                        st.download_button(
+                            "Download CSV",
+                            data=buf.getvalue(),
+                            file_name=f"scenario_{sid}_run_{rid}.csv",
+                            mime="text/csv",
+                        )

@@ -104,3 +104,40 @@ async def test_list_runs_for_scenario(tmp_path):
         items = r.json().get("items")
         assert isinstance(items, list)
         assert any(it.get("id") == rid for it in items)
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_flows(tmp_path):
+    db_file = Path(tmp_path) / "unit3.db"
+    set_db_path(db_file)
+    init_db()
+
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Create scenario
+        payload = {
+            "name": "crud-scn",
+            "payload": {
+                "sections": [{"id": "S1", "headway_seconds": 120, "traverse_seconds": 100}],
+                "trains": [{"id": "T1", "priority": 1, "planned_departure": 0, "route_sections": ["S1"]}],
+            },
+        }
+        r = await client.post("/scenarios", json=payload)
+        sid = r.json().get("id")
+
+        # Update scenario name
+        r = await client.put(f"/scenarios/{sid}", json={"name": "crud-scn-upd"})
+        assert r.status_code == 200
+        assert r.json().get("updated") is True
+
+        # Run once and then delete run
+        r = await client.post(f"/scenarios/{sid}/run")
+        rid = r.json().get("run_id")
+        r = await client.delete(f"/runs/{rid}")
+        assert r.status_code == 200
+        assert r.json().get("deleted") is True
+
+        # Delete scenario (should also be OK even if no runs remain)
+        r = await client.delete(f"/scenarios/{sid}")
+        assert r.status_code == 200
+        assert r.json().get("deleted") is True

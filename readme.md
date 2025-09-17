@@ -232,16 +232,13 @@ This section outlines the core components to be built for the backend.
 
 The API includes simple persistence to save scenarios and runs in a local SQLite DB at `data/sih.db`.
 
-- `POST /scenarios` → create a scenario
-- `GET /scenarios` → list scenarios
-- `POST /scenarios/{sid}/run` → execute a saved scenario and persist the run
-- `GET /runs/{rid}` → fetch a run with decoded JSON fields
-- `GET /scenarios/{sid}/runs` → list runs for a scenario (id, solver, created_at)
+ `PUT /scenarios/{sid}` → update scenario name/payload
+ `DELETE /scenarios/{sid}` → delete scenario and its runs
+ `DELETE /runs/{rid}` → delete a run
 
 Examples (PowerShell with curl):
-
-```powershell
-$body = @{
+ - Delete selected scenario or its latest run.
+ - Download the latest run’s schedule as CSV.
   name = "demo-s1"
   payload = @{
     sections = @(@{ id = "S1"; headway_seconds = 120; traverse_seconds = 100 })

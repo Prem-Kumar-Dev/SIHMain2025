@@ -8,7 +8,18 @@ from src.core.solver import schedule_trains
 from src.sim.simulator import summarize_schedule
 from src.sim.scenario import run_scenario, gantt_json
 from src.sim.audit import write_audit
-from src.store.db import init_db, save_scenario, list_scenarios, get_scenario, save_run, get_run, list_runs_by_scenario
+from src.store.db import (
+    init_db,
+    save_scenario,
+    list_scenarios,
+    get_scenario,
+    save_run,
+    get_run,
+    list_runs_by_scenario,
+    update_scenario,
+    delete_scenario,
+    delete_run,
+)
 
 app = FastAPI(title="SIH Train Scheduler API")
 init_db()
@@ -192,3 +203,23 @@ async def list_runs_for_scenario(sid: int) -> Dict[str, Any]:
     # Return lightweight list of runs for a scenario
     runs = list_runs_by_scenario(sid)
     return {"items": runs}
+
+
+@app.put("/scenarios/{sid}")
+async def update_scenario_api(sid: int, body: Dict[str, Any]) -> Dict[str, Any]:
+    name = body.get("name")
+    payload = body.get("payload")
+    ok = update_scenario(sid, name=name, payload=payload if isinstance(payload, dict) else None)
+    return {"updated": bool(ok)}
+
+
+@app.delete("/scenarios/{sid}")
+async def delete_scenario_api(sid: int) -> Dict[str, Any]:
+    ok = delete_scenario(sid)
+    return {"deleted": bool(ok)}
+
+
+@app.delete("/runs/{rid}")
+async def delete_run_api(rid: int) -> Dict[str, Any]:
+    ok = delete_run(rid)
+    return {"deleted": bool(ok)}
