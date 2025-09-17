@@ -6,6 +6,7 @@ from src.core.models import NetworkModel, Section, TrainRequest, ScheduleItem
 from src.core.solver import schedule_trains
 from src.sim.simulator import summarize_schedule
 from src.sim.scenario import run_scenario, gantt_json
+from src.sim.audit import write_audit
 
 app = FastAPI(title="SIH Train Scheduler API")
 
@@ -62,10 +63,17 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, An
     network = NetworkModel(sections=sections)
     schedule_items = schedule_trains(trains, network, solver=solver)
     kpis = summarize_schedule(schedule_items)
-    return {
+    resp = {
         "kpis": kpis,
         "schedule": [ScheduleItemOut(**vars(it)).model_dump() for it in schedule_items],
     }
+    write_audit({
+        "type": "schedule",
+        "solver": solver,
+        "kpis": kpis,
+        "count": len(schedule_items),
+    })
+    return resp
 
 
 @app.post("/whatif")
@@ -86,7 +94,39 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]
 
     result = run_scenario(network, trains, solver=solver)
     items = result["schedule"]
-    return {
+    resp = {
         "gantt": gantt_json(items),
         "count": len(items),
     }
+    write_audit({
+        "type": "whatif",
+        "solver": solver,
+        "count": len(items),
+    })
+    return resp
+
+
+@app.post("/kpis")
+async def kpis(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
+    # Compute KPIs for provided scenario without returning the full schedule
+    sections = []
+    for s in body.get("sections", []):
+        bw = s.get("block_windows") or []
+        section = Section(
+            id=s["id"],
+            headway_seconds=s["headway_seconds"],
+            traverse_seconds=s["traverse_seconds"],
+            block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+        )
+        sections.append(section)
+    trains = [TrainRequest(**t) for t in body.get("trains", [])]
+    network = NetworkModel(sections=sections)
+    items = schedule_trains(trains, network, solver=solver)
+    k = summarize_schedule(items)
+    write_audit({
+        "type": "kpis",
+        "solver": solver,
+        "kpis": k,
+        "count": len(items),
+    })
+    return {"kpis": k}
