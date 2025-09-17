@@ -63,6 +63,7 @@ The UI includes a Scenarios panel:
 - Save a scenario from the JSON editor to SQLite.
 - List scenarios and run a selected scenario via the API.
 - View recent runs for a scenario and inspect full run details.
+ - Download schedule CSV and per-train lateness CSV from the latest run. The API also exposes `GET /runs/{rid}/lateness.csv` to download lateness directly.
 
 Responses now include a `lateness_by_train` map when `due_time` is provided in the input.
 
