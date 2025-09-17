@@ -1,0 +1,7 @@
+{
+  "sections": [
+    { "id": "S1", "headway_seconds": 120, "traverse_seconds": 300 },
+    { "id": "S2", "headway_seconds": 120, "traverse_seconds": 240 },
+    { "id": "S3", "headway_seconds": 120, "traverse_seconds": 180 }
+  ]
+}

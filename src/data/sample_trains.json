@@ -1,0 +1,7 @@
+{
+  "trains": [
+    { "id": "T1", "priority": 2, "planned_departure": 0,   "route_sections": ["S1", "S2", "S3"] },
+    { "id": "T2", "priority": 3, "planned_departure": 60,  "route_sections": ["S1", "S2"] },
+    { "id": "T3", "priority": 1, "planned_departure": 120, "route_sections": ["S2", "S3"] }
+  ]
+}
