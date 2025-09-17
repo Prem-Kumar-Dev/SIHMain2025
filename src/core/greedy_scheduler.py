@@ -24,7 +24,7 @@ def schedule_trains(trains: List[TrainRequest], network: NetworkModel) -> List[S
 
             # find earliest feasible entry respecting headway with previous scheduled items
             entry = max(prev_exit, t.planned_departure)
-            entry = _find_earliest(entry, headway, traverse, occupancy[sid])
+            entry = _find_earliest(entry, headway, traverse, occupancy[sid], sec.block_windows or [])
             exit_time = entry + traverse
 
             item = ScheduleItem(train_id=t.id, section_id=sid, entry=entry, exit=exit_time)
@@ -36,21 +36,34 @@ def schedule_trains(trains: List[TrainRequest], network: NetworkModel) -> List[S
     return result
 
 
-def _find_earliest(start: int, headway: int, traverse: int, occ: List[ScheduleItem]) -> int:
+def _find_earliest(start: int, headway: int, traverse: int, occ: List[ScheduleItem], blocks: List[tuple]) -> int:
     # Occ intervals are non-overlapping and sorted; find earliest entry >= start such that
     # [entry, entry+traverse) doesn't violate headway with neighbors.
     entry = start
     i = 0
-    while i < len(occ):
-        cur = occ[i]
-        # enforce separation from previous interval
-        earliest_after_prev = cur.exit + headway
-        # If proposed interval overlaps with current occupancy or violates headway, push after
-        if not (entry + traverse + headway <= cur.entry or entry >= earliest_after_prev):
-            entry = max(earliest_after_prev, cur.exit + headway)
-            i = 0  # restart scan since entry changed
-            continue
-        i += 1
+    while True:
+        i = 0
+        # First, ensure we don't overlap any block windows [b0,b1)
+        moved_for_block = False
+        for (b0, b1) in blocks:
+            if not (entry + traverse <= b0 or entry >= b1):
+                entry = b1
+                moved_for_block = True
+        if moved_for_block:
+            continue  # re-check blocks and occupancy after jumping
+
+        while i < len(occ):
+            cur = occ[i]
+            # enforce separation from previous interval
+            earliest_after_prev = cur.exit + headway
+            # If proposed interval overlaps with current occupancy or violates headway, push after
+            if not (entry + traverse + headway <= cur.entry or entry >= earliest_after_prev):
+                entry = max(earliest_after_prev, cur.exit + headway)
+                i = 0  # restart scan since entry changed
+                continue
+            i += 1
+        # Passed occupancy and block checks
+        break
     return entry
 
 

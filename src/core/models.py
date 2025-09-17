@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 Seconds = int
 
@@ -8,6 +8,8 @@ class Section:
     id: str
     headway_seconds: Seconds  # minimum separation between consecutive trains
     traverse_seconds: Seconds  # time to traverse the section
+    # List of [start, end) intervals during which section is blocked/unavailable
+    block_windows: Optional[List[Tuple[Seconds, Seconds]]] = None
 
 @dataclass
 class TrainRequest:

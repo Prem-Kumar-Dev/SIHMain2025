@@ -12,6 +12,7 @@ class SectionIn(BaseModel):
     id: str
     headway_seconds: int
     traverse_seconds: int
+    block_windows: list[tuple[int, int]] | None = None
 
 class TrainIn(BaseModel):
     id: str
@@ -45,7 +46,17 @@ async def demo(solver: str = "greedy") -> Dict[str, Any]:
 
 @app.post("/schedule")
 async def schedule(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
-    sections = [Section(**s) for s in body.get("sections", [])]
+    # Pydantic coercion helps, but we construct Section explicitly to ensure tuples
+    sections = []
+    for s in body.get("sections", []):
+        bw = s.get("block_windows") or []
+        section = Section(
+            id=s["id"],
+            headway_seconds=s["headway_seconds"],
+            traverse_seconds=s["traverse_seconds"],
+            block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+        )
+        sections.append(section)
     trains = [TrainRequest(**t) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
     schedule_items = schedule_trains(trains, network, solver=solver)
