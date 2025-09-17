@@ -159,12 +159,12 @@ async def create_scenario(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/scenarios")
-async def scenarios() -> Dict[str, Any]:
-    return {"items": list_scenarios()}
+async def scenarios(offset: int = 0, limit: int = 50) -> Dict[str, Any]:
+    return {"items": list_scenarios(offset=offset, limit=limit)}
 
 
 @app.post("/scenarios/{sid}/run")
-async def run_saved_scenario(sid: int, solver: str = "greedy") -> Dict[str, Any]:
+async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None = None, comment: str | None = None) -> Dict[str, Any]:
     s = get_scenario(sid)
     if not s:
         return {"error": "scenario not found"}
@@ -182,7 +182,15 @@ async def run_saved_scenario(sid: int, solver: str = "greedy") -> Dict[str, Any]
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
     # Save run
-    rid = save_run(scenario_id=sid, solver=solver, input_payload=payload, schedule=[vars(it) for it in items], kpis=k)
+    rid = save_run(
+        scenario_id=sid,
+        solver=solver,
+        input_payload=payload,
+        schedule=[vars(it) for it in items],
+        kpis=k,
+        name=name,
+        comment=comment,
+    )
     return {"run_id": rid, "kpis": k}
 
 
@@ -199,9 +207,9 @@ async def get_run_details(rid: int) -> Dict[str, Any]:
 
 
 @app.get("/scenarios/{sid}/runs")
-async def list_runs_for_scenario(sid: int) -> Dict[str, Any]:
+async def list_runs_for_scenario(sid: int, offset: int = 0, limit: int = 50) -> Dict[str, Any]:
     # Return lightweight list of runs for a scenario
-    runs = list_runs_by_scenario(sid)
+    runs = list_runs_by_scenario(sid, offset=offset, limit=limit)
     return {"items": runs}
 
 

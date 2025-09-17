@@ -1,11 +1,15 @@
 import json
+import os
 from typing import Any, Dict
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import httpx
 
-API_BASE = st.secrets.get("API_BASE", "http://localhost:8000")
+try:
+    API_BASE = st.secrets["API_BASE"]  # May raise if secrets.toml missing
+except Exception:
+    API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
 st.set_page_config(page_title="SIH Train Scheduler", layout="wide")
 st.title("SIH Train Scheduler – What-if Gantt & Scenarios")
@@ -74,6 +78,9 @@ with sc_cols[1]:
     save_btn = st.button("Save Scenario")
 with sc_cols[2]:
     refresh_btn = st.button("Refresh List")
+with sc_cols[3]:
+    limit = st.number_input("Page Size", min_value=1, max_value=100, value=10, step=1)
+offset = st.number_input("Offset", min_value=0, value=0, step=1)
 
 if save_btn:
     try:
@@ -98,12 +105,21 @@ with httpx.Client(timeout=30) as client:
 sc_ids = [str(s.get("id")) for s in scenarios]
 selected_sid_str = st.selectbox("Select Scenario ID", options=["-"] + sc_ids, index=0)
 
+name_col, comment_col = st.columns(2)
+with name_col:
+    run_name = st.text_input("Run Name (optional)")
+with comment_col:
+    run_comment = st.text_input("Run Comment (optional)")
+
 run_saved = st.button("Run Selected Scenario")
 
 if run_saved and selected_sid_str != "-":
     sid = int(selected_sid_str)
     with httpx.Client(timeout=60) as client:
-        rr = client.post(f"{API_BASE}/scenarios/{sid}/run", params={"solver": solver})
+        rr = client.post(
+            f"{API_BASE}/scenarios/{sid}/run",
+            params={"solver": solver, "name": run_name or None, "comment": run_comment or None},
+        )
         if rr.status_code == 200:
             st.info(f"Run created with run_id={rr.json().get('run_id')}")
         else:
@@ -113,7 +129,7 @@ if run_saved and selected_sid_str != "-":
 if selected_sid_str != "-":
     sid = int(selected_sid_str)
     with httpx.Client(timeout=30) as client:
-        rl = client.get(f"{API_BASE}/scenarios/{sid}/runs")
+        rl = client.get(f"{API_BASE}/scenarios/{sid}/runs", params={"limit": int(limit), "offset": int(offset)})
         if rl.status_code == 200:
             runs = rl.json().get("items", [])
             st.subheader("Runs for Scenario")

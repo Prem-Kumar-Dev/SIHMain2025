@@ -30,7 +30,7 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
     latest_dep = max(t.planned_departure for t in trains)
     M = latest_dep + n * (D + H) + 1000
 
-    # Pairwise disjunctive constraints
+    # Pairwise disjunctive constraints (headway and traverse)
     for i in range(n):
         for j in range(i + 1, n):
             ti = trains[i]
@@ -39,6 +39,15 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
             # If y_ij=1 then i before j; else j before i
             prob += s[tj.id] >= s[ti.id] + D + H - M * (1 - y_ij)
             prob += s[ti.id] >= s[tj.id] + D + H - M * (y_ij)
+
+    # Block window avoidance: for each train and window [a,b), enforce
+    # (s_t + D <= a) OR (s_t >= b)
+    if section.block_windows:
+        for t in trains:
+            for w_idx, (a, b) in enumerate(section.block_windows):
+                z = pulp.LpVariable(f"z_{t.id}_win{w_idx}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                prob += s[t.id] + D <= int(a) + M * z
+                prob += s[t.id] >= int(b) - M * (1 - z)
 
     # Objective: minimize weighted start times (priority weight)
     prob += pulp.lpSum([ti.priority * s[ti.id] for ti in trains])
@@ -65,10 +74,7 @@ def schedule_trains_milp(network: NetworkModel, trains: List[TrainRequest]) -> L
     # Ensure all trains share identical route
     if any(t.route_sections != route for t in trains):
         raise ValueError("All trains must have identical routes for MILP scheduler")
-    # If any section has block windows, bail out to greedy for now
-    for sid in route:
-        if network.section_by_id(sid).block_windows:
-            raise ValueError("MILP scheduler does not support block windows yet")
+    # Block windows are supported below via additional disjunctive constraints
 
     if len(route) == 1:
         section = network.section_by_id(route[0])
@@ -115,6 +121,14 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
                 # if y=1 then i before j on section k
                 prob += s[(j, k)] >= s[(i, k)] + Dk + Hk - M * (1 - y[(i, j, k)])
                 prob += s[(i, k)] >= s[(j, k)] + Dk + Hk - M * (y[(i, j, k)])
+
+        # Block windows for this section
+        if sec.block_windows:
+            for ti, t in enumerate(trains):
+                for w_idx, (a, b) in enumerate(sec.block_windows):
+                    z = pulp.LpVariable(f"z_t{ti}_k{k}_w{w_idx}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    prob += s[(ti, k)] + Dk <= int(a) + M * z
+                    prob += s[(ti, k)] >= int(b) - M * (1 - z)
 
     # Objective: minimize weighted completion times at last section start (approx) or sum starts
     last_idx = m - 1

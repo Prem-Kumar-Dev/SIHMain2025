@@ -38,6 +38,8 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scenario_id INTEGER,
                 solver TEXT NOT NULL,
+                name TEXT,
+                comment TEXT,
                 input_payload TEXT NOT NULL,
                 schedule TEXT NOT NULL,
                 kpis TEXT NOT NULL,
@@ -46,6 +48,15 @@ def init_db() -> None:
             )
             """
         )
+        # Ensure columns exist for backward-compatible upgrades
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "name" not in cols:
+                conn.execute("ALTER TABLE runs ADD COLUMN name TEXT")
+            if "comment" not in cols:
+                conn.execute("ALTER TABLE runs ADD COLUMN comment TEXT")
+        except Exception:
+            pass
         conn.commit()
 
 
@@ -69,14 +80,24 @@ def get_scenario(sid: int) -> Optional[Dict[str, Any]]:
         return dict(r) if r else None
 
 
-def save_run(scenario_id: Optional[int], solver: str, input_payload: Dict[str, Any], schedule: List[Dict[str, Any]], kpis: Dict[str, Any]) -> int:
+def save_run(
+    scenario_id: Optional[int],
+    solver: str,
+    input_payload: Dict[str, Any],
+    schedule: List[Dict[str, Any]],
+    kpis: Dict[str, Any],
+    name: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> int:
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO runs(scenario_id, solver, input_payload, schedule, kpis) VALUES(?,?,?,?,?)",
+            "INSERT INTO runs(scenario_id, solver, name, comment, input_payload, schedule, kpis) VALUES(?,?,?,?,?,?,?)",
             (
                 scenario_id,
                 solver,
+                name,
+                comment,
                 json.dumps(input_payload, ensure_ascii=False),
                 json.dumps(schedule, ensure_ascii=False),
                 json.dumps(kpis, ensure_ascii=False),
@@ -92,9 +113,21 @@ def get_run(rid: int) -> Optional[Dict[str, Any]]:
         return dict(r) if r else None
 
 
-def list_runs_by_scenario(sid: int) -> List[Dict[str, Any]]:
+def list_runs_by_scenario(sid: int, offset: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
     with _conn() as conn:
-        rows = conn.execute("SELECT id, solver, created_at FROM runs WHERE scenario_id=? ORDER BY id DESC", (sid,)).fetchall()
+        rows = conn.execute(
+            "SELECT id, solver, name, comment, created_at FROM runs WHERE scenario_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (sid, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_scenarios(offset: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, payload, created_at FROM scenarios ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
