@@ -1,0 +1,11 @@
+{
+  "sections": [
+    { "id": "S1", "headway_seconds": 120, "traverse_seconds": 100 },
+    { "id": "S2", "headway_seconds": 120, "traverse_seconds": 120 }
+  ],
+  "trains": [
+    { "id": "A", "priority": 3, "planned_departure": 0,   "route_sections": ["S1", "S2"], "due_time": 260 },
+    { "id": "B", "priority": 2, "planned_departure": 60,  "route_sections": ["S1"],        "due_time": 220 },
+    { "id": "C", "priority": 1, "planned_departure": 120, "route_sections": ["S1", "S2"], "due_time": 400 }
+  ]
+}

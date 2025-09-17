@@ -1,6 +1,6 @@
 param(
     [int]$Port = 8000,
-    [string]$Host = 'localhost',
+    [string]$ApiHost = 'localhost',
     [string]$Solver = 'milp',
     [int]$OtpTolerance = 300,
     [string]$ScenarioName = 'csv-late',
@@ -76,7 +76,7 @@ function Run-DemoRequests {
     Get-Content $csvPath | Select-Object -First 5 | Out-Host
 }
 
-$base = "http://$Host:$Port"
+$base = "http://${ApiHost}:$Port"
 
 if ($StartServer) {
     Start-ApiServer -Port $Port

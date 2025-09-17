@@ -49,8 +49,6 @@ Payload notes:
 
 ## Run the Streamlit UI
 
-In a second terminal (API should be running):
-```powershell
 streamlit run ui/app.py
 ```
 Optionally, set a different API base via secrets:
@@ -69,9 +67,6 @@ Responses now include a `lateness_by_train` map when `due_time` is provided in t
 
 Example request with `due_time`:
 ```json
-{
-  "sections": [
-    { "id": "S1", "headway_seconds": 60, "traverse_seconds": 50 }
   ],
   "trains": [
     { "id": "T1", "priority": 3, "planned_departure": 0, "route_sections": ["S1"], "due_time": 400 },
@@ -80,6 +75,32 @@ Example request with `due_time`:
 }
 ```
 
+## Predictive Engine (early slice)
+
+- New endpoint: `POST /predict`
+  - Input: same shape as `/schedule` with optional dynamic fields like `current_delay_minutes` on trains.
+  - Output: `{ predicted_delay_minutes: { [train_id]: minutes }, predicted_conflicts: [...] }` where conflicts flag trains aiming for the same first section within a short window based on predicted ETAs.
+  - Current model: a baseline regressor; replaceable later with a trained GNN.
+
+Environment variables (keep your API key private):
+- Copy `.env.example` to `.env` and set:
+  - `RAILRADAR_API_BASE=https://railradar.in/api/v1`
+  - `RAILRADAR_API_KEY=...` (do not commit). The app will load `.env` automatically.
+  - `PREDICTIVE_MODEL_PATH=path\to\weights.pt` (optional; enables GNN stub loading; baseline used if missing)
+
+Quick demo in PowerShell:
+```powershell
+.\n+scripts\run_predict_demo.ps1 -ApiBase http://localhost:8000
+```
+
+Related endpoints:
+- `POST /live/snapshot?use_live=false&max_trains=50`
+  - Default: returns the provided `body` state if present; otherwise a minimal sample state.
+  - When `use_live=true` and `RAILRADAR_API_KEY` is set, fetches a live map and maps it to `{ sections, trains }`. It respects `max_trains` and preserves any `sections` you pass in the body.
+  - Notes: live mapping is best-effort and may not include full route topology; you can provide `sections` in the body to control topology.
+- `POST /resolve?solver=milp&otp_tolerance=300`
+  - Input: `{ state, predicted_conflicts }` where `state` is `{ sections, trains }` and conflicts are from `/predict`.
+  - Output: `{ kpis, schedule }` for the reduced instance covering only trains and sections involved in conflicts.
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.
 - Add disruption handling and rapid re-optimization.
@@ -90,19 +111,16 @@ Here is a comprehensive `README.md` file tailored for your project.
 
 -----
 
-# AI-Powered Train Traffic Control for Indian Railways
 
 ## 1\. Project Overview
 
 This project aims to develop an intelligent Decision Support System (DSS) to maximize section throughput and optimize train traffic control for Indian Railways. The current system relies heavily on the manual, experience-based decisions of Section Controllers, which is becoming increasingly insufficient due to rising traffic density and network complexity.[1, 2]
 
-This AI-powered system will transition the paradigm from manual and reactive control to a data-driven, predictive, and optimized framework. It will assist controllers by providing real-time predictions, identifying potential conflicts, and recommending optimal, conflict-free schedules to enhance efficiency, safety, and punctuality.[1, 3]
 
 ## 2\. System Architecture
 
 The system is designed with a modular, multi-layered architecture. The core philosophy is **augmented intelligence**, where the AI assists the human controller, who retains final authority.[4, 5, 6]
 
-The architecture consists of four primary layers:
 
 1.  **Data Ingestion & Integration Layer**: The system's sensory interface. It connects to various railway data sources, cleans and standardizes the data, and feeds it into the system.[7, 8, 9, 10, 11]
 2.  **Digital Twin & Simulation Environment**: The heart of the system. It maintains a high-fidelity, real-time virtual model of the railway network. This serves as the single source of truth for the AI and a sandbox for "what-if" analysis.[8, 12, 13, 14]
@@ -231,7 +249,7 @@ This section outlines the core components to be built for the backend.
     Copy the `.env.example` file to `.env` and fill in your credentials (e.g., API keys, database connection strings).
 
     ```bash
-    cp.env.example.env
+  cp .env.example .env
     ```
 
 3.  **Install dependencies:**
@@ -239,12 +257,16 @@ This section outlines the core components to be built for the backend.
 
     ```bash
     python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+  source venv/bin/activate  # On Windows PowerShell: `.\\venv\\Scripts\\Activate.ps1`
     pip install -r requirements.txt
     ```
 
 4.  **Run the application:**
-    (Instructions to be added once the API server is implemented).
+  Start the API locally:
+
+  ```powershell
+  uvicorn src.api:app --host 0.0.0.0 --port 8000
+  ```
 
 5.  **Run tests:**
 
@@ -263,6 +285,8 @@ The API includes simple persistence to save scenarios and runs in a local SQLite
 Examples (PowerShell with curl):
  - Delete selected scenario or its latest run.
  - Download the latest run’s schedule as CSV.
+```powershell
+$payload = @{
   name = "demo-s1"
   payload = @{
     sections = @(@{ id = "S1"; headway_seconds = 120; traverse_seconds = 100 })
@@ -271,14 +295,14 @@ Examples (PowerShell with curl):
       @{ id = "B"; priority = 2; planned_departure = 30; route_sections = @("S1") }
     )
   }
-} | ConvertTo-Json -Depth 5
+} | ConvertTo-Json -Depth 6
 
-curl -s -X POST http://localhost:8000/scenarios -H "Content-Type: application/json" -d $body
+curl -s -X POST http://localhost:8000/scenarios -H "Content-Type: application/json" -d $payload
 
 curl -s http://localhost:8000/scenarios
 
 # Assume previous response had id=1
-curl -s -X POST http://localhost:8000/scenarios/1/run
+curl -s -X POST "http://localhost:8000/scenarios/1/run?solver=milp&otp_tolerance=300"
 
 # Assume previous response had run_id=1
 curl -s http://localhost:8000/runs/1 | ConvertFrom-Json | Format-List

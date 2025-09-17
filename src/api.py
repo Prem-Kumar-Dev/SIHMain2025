@@ -20,11 +20,41 @@ from src.store.db import (
     delete_scenario,
     delete_run,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, Response
+from src.ai_core.predictive_engine.feature_engineering import build_features_from_state
+from src.ai_core.predictive_engine.model import BaselineDelayRegressor
+from src.ai_core.predictive_engine.conflict_detector import detect_future_conflicts
+from src.ai_core.predictive_engine.config import PredictiveConfig
+from src.ai_core.predictive_engine.gnn.graph_builder import build_hetero_graph
+from src.ai_core.predictive_engine.gnn.model_stub import GNNDelayPredictor
+try:
+    from src.ai_core.predictive_engine.gnn.model_torch import TorchDelayPredictor
+except Exception:
+    TorchDelayPredictor = None  # type: ignore
+from src.ai_core.predictive_engine.data_client import RailRadarClient
+from src.ai_core.predictive_engine.live_mapping import map_live_to_state
 import io, csv
 
 app = FastAPI(title="SIH Train Scheduler API")
 init_db()
+
+# Helper: sanitize incoming train dicts to match TrainRequest signature
+_TRAIN_ALLOWED_KEYS = {"id", "priority", "route_sections", "planned_departure", "dwell_before", "due_time"}
+
+def _clean_train_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(d, dict):
+        return {}
+    return {k: v for k, v in d.items() if k in _TRAIN_ALLOWED_KEYS}
+
+@app.get("/")
+async def root() -> RedirectResponse:
+    # Redirect base URL to interactive docs to avoid 404 confusion
+    return RedirectResponse(url="/docs")
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    # Return empty 204 for favicon to avoid noisy 404s in logs
+    return Response(status_code=204)
 
 class SectionIn(BaseModel):
     id: str
@@ -48,6 +78,161 @@ class ScheduleItemOut(BaseModel):
     section_id: str
     entry: int
     exit: int
+
+
+@app.post("/predict")
+async def predict(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Predict per-train delay (minutes) and simple future conflicts.
+
+    Input shape mirrors /schedule with optional dynamic fields like `current_delay_minutes`.
+    Output includes per-train delay predictions and a naive conflict list for the next section.
+    """
+    cfg = PredictiveConfig()
+    preds: Dict[str, float]
+    if cfg.model_path:
+        # Priority 1: Torch feature-based model if available
+        try:
+            if TorchDelayPredictor is not None:
+                feats = build_features_from_state(body)
+                preds = TorchDelayPredictor(cfg.model_path).predict_minutes(feats)
+            else:
+                preds = {}
+        except Exception:
+            preds = {}
+        if not preds:
+            # Priority 2: GNN stub path
+            try:
+                graph, idx = build_hetero_graph(body)
+                gnn = GNNDelayPredictor(model_path=cfg.model_path)
+                preds = gnn.predict_minutes(graph, idx)
+            except Exception:
+                preds = {}
+        if not preds:
+            # Fallback to baseline
+            feats = build_features_from_state(body)
+            preds = BaselineDelayRegressor().predict(feats)
+    else:
+        # Feature extraction + baseline model
+        feats = build_features_from_state(body)
+        preds = BaselineDelayRegressor().predict(feats)
+    # Heuristic conflict detection using predicted ETAs
+    conflicts = detect_future_conflicts(preds, body)
+    return {"predicted_delay_minutes": preds, "predicted_conflicts": conflicts}
+
+
+@app.post("/resolve")
+async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
+    """Resolve predicted conflicts by scheduling only affected trains and sections.
+
+    Body:
+      {
+        "state": { sections: [...], trains: [...] },
+        "predicted_conflicts": [ { section_id, trains: [..] }, ... ]
+      }
+    """
+    state = body.get("state") or {}
+    conflicts = body.get("predicted_conflicts") or []
+    if not isinstance(state, dict) or not state.get("trains"):
+        return {"error": "missing state"}
+    # Determine involved train ids
+    involved: set[str] = set()
+    for c in conflicts:
+        for tid in c.get("trains", []):
+            if isinstance(tid, str):
+                involved.add(tid)
+    if not involved:
+        # Nothing to resolve; return no-op
+        return {"kpis": {"total_trains": 0, "otp_tolerance_used": int(otp_tolerance)}, "schedule": []}
+    # Filter trains
+    trains_in = [t for t in (state.get("trains") or []) if t.get("id") in involved]
+    # Collect referenced sections from their routes
+    section_ids: set[str] = set()
+    for t in trains_in:
+        for sid in (t.get("route_sections") or []):
+            section_ids.add(sid)
+    sections_in = [s for s in (state.get("sections") or []) if s.get("id") in section_ids]
+    # Build domain objects
+    sections = []
+    for s in sections_in:
+        bw = s.get("block_windows") or []
+        sections.append(Section(
+            id=s["id"], headway_seconds=s["headway_seconds"], traverse_seconds=s["traverse_seconds"],
+            block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+            platform_capacity=s.get("platform_capacity"),
+            conflicts_with=s.get("conflicts_with"),
+            conflict_groups=s.get("conflict_groups"),
+        ))
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in trains_in]
+    network = NetworkModel(sections=sections)
+    items = schedule_trains(trains, network, solver=solver)
+    k = summarize_schedule(items)
+    lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
+    lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
+    k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
+    return {"kpis": k, "schedule": [ScheduleItemOut(**vars(it)).model_dump() for it in items]}
+
+
+@app.post("/live/snapshot")
+async def live_snapshot(body: Dict[str, Any] | None = None, use_live: bool = False, max_trains: int = 50) -> Dict[str, Any]:
+    """Return a network state.
+
+    - If use_live=true and RAILRADAR_API_KEY is set, this will eventually fetch from RailRadar.
+    - For now, returns the provided body (if any) or a minimal sample to avoid external calls by default.
+    """
+    cfg = PredictiveConfig()
+    if use_live and not cfg.is_live_enabled:
+        return {"enabled": False, "reason": "RAILRADAR_API_KEY not set", "state": None}
+    fetched_count = 0
+    fetch_error: str | None = None
+    mapped_state = None
+    if use_live and cfg.is_live_enabled:
+        try:
+            client = RailRadarClient.from_config(cfg)
+            live = await client.get_live_map()
+            # Attempt to count trains conservatively
+            if isinstance(live, dict):
+                if isinstance(live.get("trains"), list):
+                    fetched_count = len(live["trains"])  # typical shape
+                else:
+                    # fallback: count top-level list-like fields
+                    fetched_count = sum(1 for _ in live.values() if isinstance(_, list))
+            elif isinstance(live, list):
+                fetched_count = len(live)
+            # Map live payload to internal state, preserving provided sections if present in body
+            sections_hint = []
+            if isinstance(body, dict) and isinstance(body.get("sections"), list):
+                sections_hint = body.get("sections")
+            mapped_state = map_live_to_state(live, sections_hint=sections_hint, max_trains=max_trains)
+        except Exception as e:
+            fetch_error = "fetch_failed"
+    # Echo provided state if present
+    if isinstance(body, dict) and body.get("sections") and body.get("trains"):
+        return {"enabled": bool(cfg.is_live_enabled and use_live), "state": body}
+    # If we have a mapped live state, return it
+    if isinstance(mapped_state, dict) and mapped_state.get("trains"):
+        return {
+            "enabled": bool(cfg.is_live_enabled and use_live),
+            "fetched_count": int(fetched_count),
+            "fetch_error": fetch_error,
+            "state": mapped_state,
+        }
+    # Minimal sample fallback
+    sample = {
+        "sections": [
+            {"id": "S1", "headway_seconds": 120, "traverse_seconds": 100},
+            {"id": "S2", "headway_seconds": 120, "traverse_seconds": 120},
+        ],
+        "trains": [
+            {"id": "A", "priority": 1, "planned_departure": 0, "route_sections": ["S1", "S2"], "current_delay_minutes": 0.0},
+            {"id": "B", "priority": 2, "planned_departure": 30, "route_sections": ["S1"], "current_delay_minutes": 1.0},
+        ],
+    }
+    return {
+        "enabled": bool(cfg.is_live_enabled and use_live),
+        "fetched_count": int(fetched_count),
+        "fetch_error": fetch_error,
+        "state": sample,
+    }
 
 @app.get("/demo")
 async def demo(solver: str = "greedy") -> Dict[str, Any]:
@@ -83,7 +268,7 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: 
             conflict_groups=s.get("conflict_groups"),
         )
         sections.append(section)
-    trains = [TrainRequest(**t) for t in body.get("trains", [])]
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
     schedule_items = schedule_trains(trains, network, solver=solver)
     kpis = summarize_schedule(schedule_items)
@@ -130,7 +315,7 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: in
             conflict_groups=s.get("conflict_groups"),
         )
         sections.append(section)
-    trains = [TrainRequest(**t) for t in body.get("trains", [])]
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
 
     result = run_scenario(network, trains, solver=solver)
@@ -169,7 +354,7 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int 
             block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
         )
         sections.append(section)
-    trains = [TrainRequest(**t) for t in body.get("trains", [])]
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
@@ -218,7 +403,7 @@ async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None 
             conflicts_with=sec.get("conflicts_with"),
             conflict_groups=sec.get("conflict_groups"),
         ))
-    trains = [TrainRequest(**t) for t in payload.get("trains", [])]
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in payload.get("trains", [])]
     network = NetworkModel(sections=sections)
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)

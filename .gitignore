@@ -25,3 +25,8 @@ htmlcov/
 
 # Local data
 *.log
+.env
+.env.*
+!*.example
+secrets/*.json
+secrets/*.txt
