@@ -231,6 +231,7 @@ The API includes simple persistence to save scenarios and runs in a local SQLite
 - `GET /scenarios` → list scenarios
 - `POST /scenarios/{sid}/run` → execute a saved scenario and persist the run
 - `GET /runs/{rid}` → fetch a run with decoded JSON fields
+- `GET /scenarios/{sid}/runs` → list runs for a scenario (id, solver, created_at)
 
 Examples (PowerShell with curl):
 
@@ -255,6 +256,9 @@ curl -s -X POST http://localhost:8000/scenarios/1/run
 
 # Assume previous response had run_id=1
 curl -s http://localhost:8000/runs/1 | ConvertFrom-Json | Format-List
+
+# List runs for scenario id=1
+curl -s http://localhost:8000/scenarios/1/runs | ConvertFrom-Json | Format-List
 ```
 
 ## 8\. How to Contribute

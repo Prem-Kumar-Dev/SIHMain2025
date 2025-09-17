@@ -65,3 +65,42 @@ async def test_persistence_flow(tmp_path):
         item0 = run["schedule"][0]
         for key in ("train_id", "section_id", "entry", "exit"):
             assert key in item0
+
+
+@pytest.mark.asyncio
+async def test_list_runs_for_scenario(tmp_path):
+    # Isolate DB to a temp file
+    db_file = Path(tmp_path) / "unit2.db"
+    set_db_path(db_file)
+    init_db()
+
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Create a scenario and run it once
+        payload = {
+            "name": "list-runs",
+            "payload": {
+                "sections": [
+                    {"id": "S1", "headway_seconds": 120, "traverse_seconds": 100}
+                ],
+                "trains": [
+                    {"id": "T1", "priority": 1, "planned_departure": 0, "route_sections": ["S1"]}
+                ],
+            },
+        }
+        r = await client.post("/scenarios", json=payload)
+        assert r.status_code == 200
+        sid = r.json().get("id")
+        assert isinstance(sid, int)
+
+        r = await client.post(f"/scenarios/{sid}/run")
+        assert r.status_code == 200
+        rid = r.json().get("run_id")
+        assert isinstance(rid, int)
+
+        # List runs for scenario
+        r = await client.get(f"/scenarios/{sid}/runs")
+        assert r.status_code == 200
+        items = r.json().get("items")
+        assert isinstance(items, list)
+        assert any(it.get("id") == rid for it in items)

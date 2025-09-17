@@ -185,3 +185,10 @@ async def get_run_details(rid: int) -> Dict[str, Any]:
     r["schedule"] = json.loads(r["schedule"])
     r["kpis"] = json.loads(r["kpis"])
     return {"run": r}
+
+
+@app.get("/scenarios/{sid}/runs")
+async def list_runs_for_scenario(sid: int) -> Dict[str, Any]:
+    # Return lightweight list of runs for a scenario
+    runs = list_runs_by_scenario(sid)
+    return {"items": runs}
