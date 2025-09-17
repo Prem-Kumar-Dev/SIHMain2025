@@ -1,3 +1,4 @@
+import json
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -7,8 +8,10 @@ from src.core.solver import schedule_trains
 from src.sim.simulator import summarize_schedule
 from src.sim.scenario import run_scenario, gantt_json
 from src.sim.audit import write_audit
+from src.store.db import init_db, save_scenario, list_scenarios, get_scenario, save_run, get_run, list_runs_by_scenario
 
 app = FastAPI(title="SIH Train Scheduler API")
+init_db()
 
 class SectionIn(BaseModel):
     id: str
@@ -131,3 +134,54 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
         "count": len(items),
     })
     return {"kpis": k}
+
+
+# Persistence APIs
+@app.post("/scenarios")
+async def create_scenario(body: Dict[str, Any]) -> Dict[str, Any]:
+    name = body.get("name", "scenario")
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        return {"error": "payload must be an object"}
+    sid = save_scenario(name, payload)
+    return {"id": sid}
+
+
+@app.get("/scenarios")
+async def scenarios() -> Dict[str, Any]:
+    return {"items": list_scenarios()}
+
+
+@app.post("/scenarios/{sid}/run")
+async def run_saved_scenario(sid: int, solver: str = "greedy") -> Dict[str, Any]:
+    s = get_scenario(sid)
+    if not s:
+        return {"error": "scenario not found"}
+    payload = json.loads(s["payload"])
+    # Reuse /schedule path
+    sections = []
+    for sec in payload.get("sections", []):
+        bw = sec.get("block_windows") or []
+        sections.append(Section(
+            id=sec["id"], headway_seconds=sec["headway_seconds"], traverse_seconds=sec["traverse_seconds"],
+            block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+        ))
+    trains = [TrainRequest(**t) for t in payload.get("trains", [])]
+    network = NetworkModel(sections=sections)
+    items = schedule_trains(trains, network, solver=solver)
+    k = summarize_schedule(items)
+    # Save run
+    rid = save_run(scenario_id=sid, solver=solver, input_payload=payload, schedule=[vars(it) for it in items], kpis=k)
+    return {"run_id": rid, "kpis": k}
+
+
+@app.get("/runs/{rid}")
+async def get_run_details(rid: int) -> Dict[str, Any]:
+    r = get_run(rid)
+    if not r:
+        return {"error": "run not found"}
+    # Decode JSON fields
+    r["input_payload"] = json.loads(r["input_payload"])
+    r["schedule"] = json.loads(r["schedule"])
+    r["kpis"] = json.loads(r["kpis"])
+    return {"run": r}

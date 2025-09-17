@@ -223,6 +223,40 @@ This section outlines the core components to be built for the backend.
     pytest
     ```
 
+## Persistence (SQLite) endpoints
+
+The API includes simple persistence to save scenarios and runs in a local SQLite DB at `data/sih.db`.
+
+- `POST /scenarios` → create a scenario
+- `GET /scenarios` → list scenarios
+- `POST /scenarios/{sid}/run` → execute a saved scenario and persist the run
+- `GET /runs/{rid}` → fetch a run with decoded JSON fields
+
+Examples (PowerShell with curl):
+
+```powershell
+$body = @{
+  name = "demo-s1"
+  payload = @{
+    sections = @(@{ id = "S1"; headway_seconds = 120; traverse_seconds = 100 })
+    trains = @(
+      @{ id = "A"; priority = 1; planned_departure = 0; route_sections = @("S1") },
+      @{ id = "B"; priority = 2; planned_departure = 30; route_sections = @("S1") }
+    )
+  }
+} | ConvertTo-Json -Depth 5
+
+curl -s -X POST http://localhost:8000/scenarios -H "Content-Type: application/json" -d $body
+
+curl -s http://localhost:8000/scenarios
+
+# Assume previous response had id=1
+curl -s -X POST http://localhost:8000/scenarios/1/run
+
+# Assume previous response had run_id=1
+curl -s http://localhost:8000/runs/1 | ConvertFrom-Json | Format-List
+```
+
 ## 8\. How to Contribute
 
 Contributions are welcome\! Please follow these steps:
