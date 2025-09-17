@@ -71,9 +71,9 @@ def schedule_trains_milp(network: NetworkModel, trains: List[TrainRequest]) -> L
     if not trains:
         return []
     route = trains[0].route_sections
-    # Ensure all trains share identical route
+    # If routes differ, use general heterogeneous-route MILP
     if any(t.route_sections != route for t in trains):
-        raise ValueError("All trains must have identical routes for MILP scheduler")
+        return schedule_trains_hetero_routes_milp(trains, network)
     # Block windows are supported below via additional disjunctive constraints
 
     if len(route) == 1:
@@ -144,5 +144,86 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
             items.append(ScheduleItem(train_id=t.id, section_id=sec.id, entry=start, exit=start + sec.traverse_seconds))
 
     # Sort by start time
+    items.sort(key=lambda it: (it.section_id, it.entry))
+    return items
+
+
+def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: NetworkModel) -> List[ScheduleItem]:
+    # General MILP where trains may have different routes. Constraints:
+    # - Intra-train precedence across its route (with dwell)
+    # - For each section, disjunctive non-overlap + headway across trains traversing that section
+    # - Block windows per section
+    n = len(trains)
+    if n == 0:
+        return []
+
+    prob = pulp.LpProblem("hetero_route_schedule", pulp.LpMinimize)
+
+    # Build per-train per-leg variables: s[(ti, k)] start time on k-th section of train ti
+    # Also collect for each section id, the list of (ti, k) pairs that traverse it
+    s: Dict[Tuple[int, int], pulp.LpVariable] = {}
+    legs_by_section: Dict[str, List[Tuple[int, int]]] = {}
+    max_planned = 0
+    for ti, t in enumerate(trains):
+        max_planned = max(max_planned, t.planned_departure)
+        for k, sid in enumerate(t.route_sections):
+            lb = t.planned_departure if k == 0 else 0
+            s[(ti, k)] = pulp.LpVariable(f"s_{t.id}_{k}", lowBound=lb, cat=pulp.LpContinuous)
+            legs_by_section.setdefault(sid, []).append((ti, k))
+
+    # Intra-train precedence with dwell
+    for ti, t in enumerate(trains):
+        for k in range(1, len(t.route_sections)):
+            prev_sec = network.section_by_id(t.route_sections[k - 1])
+            dwell = 0
+            if t.dwell_before:
+                next_sid = t.route_sections[k]
+                dwell = int(t.dwell_before.get(next_sid, 0))
+            prob += s[(ti, k)] >= s[(ti, k - 1)] + prev_sec.traverse_seconds + dwell
+
+    # Big-M estimate
+    # Upper bound horizon: sum of all sections' (D+H) across the longest route * n, coarse bound
+    all_secs = {sid: network.section_by_id(sid) for t in trains for sid in t.route_sections}
+    sum_DH = sum(sec.traverse_seconds + sec.headway_seconds for sec in all_secs.values())
+    M = max_planned + n * (sum_DH if sum_DH > 0 else 1000) + 1000
+
+    # Section-wise non-overlap and block windows
+    for sid, legs in legs_by_section.items():
+        sec = network.section_by_id(sid)
+        Dk = sec.traverse_seconds
+        Hk = sec.headway_seconds
+        # Pairwise disjunctive for all (ti,k) legs on this section
+        for idx in range(len(legs)):
+            for jdx in range(idx + 1, len(legs)):
+                (ti, ki) = legs[idx]
+                (tj, kj) = legs[jdx]
+                y = pulp.LpVariable(f"y_t{ti}_k{ki}_vs_t{tj}_k{kj}_{sid}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                prob += s[(tj, kj)] >= s[(ti, ki)] + Dk + Hk - M * (1 - y)
+                prob += s[(ti, ki)] >= s[(tj, kj)] + Dk + Hk - M * (y)
+        # Block windows
+        if sec.block_windows:
+            for (ti, ki) in legs:
+                for w_idx, (a, b) in enumerate(sec.block_windows):
+                    z = pulp.LpVariable(f"z_t{ti}_k{ki}_{sid}_w{w_idx}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    prob += s[(ti, ki)] + Dk <= int(a) + M * z
+                    prob += s[(ti, ki)] >= int(b) - M * (1 - z)
+
+    # Objective: minimize weighted entry time into last section for each train
+    obj = []
+    for ti, t in enumerate(trains):
+        last_k = len(t.route_sections) - 1
+        obj.append(t.priority * s[(ti, last_k)])
+    prob += pulp.lpSum(obj)
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    # Build schedule items from variables
+    items: List[ScheduleItem] = []
+    for ti, t in enumerate(trains):
+        for k, sid in enumerate(t.route_sections):
+            start = int(pulp.value(s[(ti, k)]))
+            Dk = network.section_by_id(sid).traverse_seconds
+            items.append(ScheduleItem(train_id=t.id, section_id=sid, entry=start, exit=start + Dk))
+    # Sort for consistency
     items.sort(key=lambda it: (it.section_id, it.entry))
     return items
