@@ -20,6 +20,8 @@ from src.store.db import (
     delete_scenario,
     delete_run,
 )
+from fastapi.responses import StreamingResponse
+import io, csv
 
 app = FastAPI(title="SIH Train Scheduler API")
 init_db()
@@ -87,7 +89,8 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: 
     kpis = summarize_schedule(schedule_items)
     # Extend with lateness KPIs if applicable
     lk = lateness_kpis(schedule_items, trains, otp_tolerance_s=otp_tolerance)
-    kpis = {**kpis, **lk}
+    lk0 = lateness_kpis(schedule_items, trains, otp_tolerance_s=0)
+    kpis = {**kpis, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
     # Compute per-train lateness if due_time present
     lateness_by_train: Dict[str, int] = {}
     for t in trains:
@@ -171,7 +174,8 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int 
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
-    k = {**k, **lk}
+    lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
+    k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
     write_audit({
         "type": "kpis",
         "solver": solver,
@@ -218,9 +222,10 @@ async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None 
     network = NetworkModel(sections=sections)
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
-    # enrich with lateness KPIs and map
+    # enrich with lateness KPIs and map, plus otp0 and tolerance used
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
-    k = {**k, **lk}
+    lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
+    k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
     lateness_by_train: Dict[str, int] = {}
     for t in trains:
         if t.due_time is not None and t.route_sections:
@@ -278,3 +283,39 @@ async def delete_scenario_api(sid: int) -> Dict[str, Any]:
 async def delete_run_api(rid: int) -> Dict[str, Any]:
     ok = delete_run(rid)
     return {"deleted": bool(ok)}
+
+
+@app.get("/runs/{rid}/lateness.csv")
+async def download_lateness_csv(rid: int) -> StreamingResponse:
+    r = get_run(rid)
+    if not r:
+        return StreamingResponse(io.StringIO("error,run not found\n"), media_type="text/csv")
+    # Decode columns
+    payload = json.loads(r.get("input_payload")) if r.get("input_payload") else {}
+    schedule = json.loads(r.get("schedule")) if isinstance(r.get("schedule"), str) else r.get("schedule")
+    kpis = json.loads(r.get("kpis")) if isinstance(r.get("kpis"), str) else r.get("kpis")
+    lateness_map = {}
+    if isinstance(kpis, dict) and "lateness_by_train" in kpis:
+        lateness_map = kpis.get("lateness_by_train") or {}
+    # Fallback compute if missing
+    if not lateness_map:
+        try:
+            last_map = {}
+            for tr in payload.get("trains", []):
+                if isinstance(tr, dict) and tr.get("route_sections"):
+                    last_map[tr.get("id")] = tr["route_sections"][-1]
+            for tr in payload.get("trains", []):
+                if tr.get("due_time") is not None and tr.get("id") in last_map:
+                    last = last_map[tr.get("id")]
+                    entries = [it.get("entry") for it in (schedule or []) if it.get("train_id") == tr.get("id") and it.get("section_id") == last]
+                    if entries:
+                        lateness_map[tr.get("id")] = max(0, int(entries[0]) - int(tr.get("due_time")))
+        except Exception:
+            pass
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["train_id", "lateness_s"])
+    writer.writeheader()
+    for k, v in (lateness_map or {}).items():
+        writer.writerow({"train_id": k, "lateness_s": int(v)})
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=run_{rid}_lateness.csv"})

@@ -25,3 +25,5 @@
 {"type": "schedule", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0}, "count": 2}
 {"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0}, "count": 2}
 {"type": "schedule", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0}, "count": 2}
+{"type": "schedule", "solver": "greedy", "kpis": {"total_trains": 2, "makespan": 320, "utilization": 62, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 0.0, "otp_tolerance_used": 0}, "count": 2}
+{"type": "schedule", "solver": "milp", "kpis": {"total_trains": 2, "makespan": 20, "utilization": 100, "conflicts": 0, "otp_end": 100.0, "avg_lateness": 0.0, "total_lateness": 0.0, "otp0_end": 100.0, "otp_tolerance_used": 0}, "count": 2}
