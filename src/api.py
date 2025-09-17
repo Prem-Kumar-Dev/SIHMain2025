@@ -21,6 +21,7 @@ class TrainIn(BaseModel):
     priority: int
     planned_departure: int
     route_sections: List[str]
+    dwell_before: Dict[str, int] | None = None
 
 class ScheduleItemOut(BaseModel):
     train_id: str

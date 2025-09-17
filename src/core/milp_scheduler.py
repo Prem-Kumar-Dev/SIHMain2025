@@ -89,11 +89,15 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
             lb = t.planned_departure if k == 0 else 0
             s[(ti, k)] = pulp.LpVariable(f"s_{t.id}_{k}", lowBound=lb, cat=pulp.LpContinuous)
 
-    # Precedence within a train across sections: start next section after completing previous
+    # Precedence within a train across sections: start next section after completing previous + dwell
     for ti, t in enumerate(trains):
         for k in range(1, m):
             prev = sections[k - 1]
-            prob += s[(ti, k)] >= s[(ti, k - 1)] + prev.traverse_seconds
+            dwell = 0
+            if t.dwell_before:
+                next_sid = sections[k].id
+                dwell = int(t.dwell_before.get(next_sid, 0))
+            prob += s[(ti, k)] >= s[(ti, k - 1)] + prev.traverse_seconds + dwell
 
     # Pairwise non-overlap with headway per section
     y: Dict[Tuple[int, int, int], pulp.LpVariable] = {}

@@ -17,7 +17,7 @@ def schedule_trains(trains: List[TrainRequest], network: NetworkModel) -> List[S
     for t in trains_sorted:
         current_time = t.planned_departure
         prev_exit = current_time
-        for sid in t.route_sections:
+        for idx, sid in enumerate(t.route_sections):
             sec = network.section_by_id(sid)
             headway = sec.headway_seconds
             traverse = sec.traverse_seconds
@@ -31,7 +31,13 @@ def schedule_trains(trains: List[TrainRequest], network: NetworkModel) -> List[S
             _insert_occupancy(occupancy[sid], item)
             result.append(item)
 
-            prev_exit = exit_time + headway  # ensure separation before next section
+            # Dwell before next section if specified
+            dwell = 0
+            if t.dwell_before and idx + 1 < len(t.route_sections):
+                next_sid = t.route_sections[idx + 1]
+                dwell = int(t.dwell_before.get(next_sid, 0))
+
+            prev_exit = exit_time + dwell + headway  # ensure separation and dwell before next section
 
     return result
 

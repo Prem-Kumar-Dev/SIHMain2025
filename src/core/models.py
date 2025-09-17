@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 Seconds = int
 
@@ -17,6 +17,9 @@ class TrainRequest:
     priority: int  # higher = more important
     route_sections: List[str]
     planned_departure: Seconds  # epoch seconds or t=0 reference
+    # Optional: dwell time required before entering a given section (e.g., station dwell)
+    # Key: section_id, Value: dwell seconds
+    dwell_before: Optional[Dict[str, Seconds]] = None
 
 @dataclass
 class ScheduleItem:
