@@ -39,6 +39,18 @@ Try endpoints:
 curl http://localhost:8000/demo
 ```
 
+## Run the Streamlit UI
+
+In a second terminal (API should be running):
+```powershell
+streamlit run ui/app.py
+```
+Optionally, set a different API base via secrets:
+Create `.streamlit/secrets.toml` with:
+```
+API_BASE = "http://localhost:8000"
+```
+
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.
 - Add disruption handling and rapid re-optimization.
