@@ -58,14 +58,73 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
 
 
 def schedule_trains_milp(network: NetworkModel, trains: List[TrainRequest]) -> List[ScheduleItem]:
-    # Support only the case where each train has exactly one section and all the same section id
+    # If no trains, return early
     if not trains:
         return []
-    first_route = trains[0].route_sections
-    if len(first_route) != 1:
-        raise ValueError("MILP scheduler currently supports single-section routes only")
-    sid = first_route[0]
-    if any(len(t.route_sections) != 1 or t.route_sections[0] != sid for t in trains):
-        raise ValueError("All trains must have identical single-section routes for MILP scheduler")
-    section = network.section_by_id(sid)
-    return schedule_trains_single_section_milp(trains, section)
+    route = trains[0].route_sections
+    # Ensure all trains share identical route
+    if any(t.route_sections != route for t in trains):
+        raise ValueError("All trains must have identical routes for MILP scheduler")
+    # If any section has block windows, bail out to greedy for now
+    for sid in route:
+        if network.section_by_id(sid).block_windows:
+            raise ValueError("MILP scheduler does not support block windows yet")
+
+    if len(route) == 1:
+        section = network.section_by_id(route[0])
+        return schedule_trains_single_section_milp(trains, section)
+    else:
+        return schedule_trains_multi_section_milp(trains, [network.section_by_id(sid) for sid in route])
+
+
+def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: List[Section]) -> List[ScheduleItem]:
+    n = len(trains)
+    m = len(sections)
+    prob = pulp.LpProblem("multi_section_schedule", pulp.LpMinimize)
+
+    # Start time variables s[t,k] for train t on section k (index-based)
+    s: Dict[Tuple[int, int], pulp.LpVariable] = {}
+    for ti, t in enumerate(trains):
+        for k in range(m):
+            lb = t.planned_departure if k == 0 else 0
+            s[(ti, k)] = pulp.LpVariable(f"s_{t.id}_{k}", lowBound=lb, cat=pulp.LpContinuous)
+
+    # Precedence within a train across sections: start next section after completing previous
+    for ti, t in enumerate(trains):
+        for k in range(1, m):
+            prev = sections[k - 1]
+            prob += s[(ti, k)] >= s[(ti, k - 1)] + prev.traverse_seconds
+
+    # Pairwise non-overlap with headway per section
+    y: Dict[Tuple[int, int, int], pulp.LpVariable] = {}
+    # Big-M
+    latest_dep = max(t.planned_departure for t in trains)
+    maxD = sum(sec.traverse_seconds + sec.headway_seconds for sec in sections)
+    M = latest_dep + n * maxD + 1000
+
+    for k, sec in enumerate(sections):
+        Dk = sec.traverse_seconds
+        Hk = sec.headway_seconds
+        for i in range(n):
+            for j in range(i + 1, n):
+                y[(i, j, k)] = pulp.LpVariable(f"y_t{i}_t{j}_k{k}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                # if y=1 then i before j on section k
+                prob += s[(j, k)] >= s[(i, k)] + Dk + Hk - M * (1 - y[(i, j, k)])
+                prob += s[(i, k)] >= s[(j, k)] + Dk + Hk - M * (y[(i, j, k)])
+
+    # Objective: minimize weighted completion times at last section start (approx) or sum starts
+    last_idx = m - 1
+    prob += pulp.lpSum([trains[ti].priority * s[(ti, last_idx)] for ti in range(n)])
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+
+    # Build schedule items for each train and section
+    items: List[ScheduleItem] = []
+    for ti, t in enumerate(trains):
+        for k, sec in enumerate(sections):
+            start = int(pulp.value(s[(ti, k)]))
+            items.append(ScheduleItem(train_id=t.id, section_id=sec.id, entry=start, exit=start + sec.traverse_seconds))
+
+    # Sort by start time
+    items.sort(key=lambda it: (it.section_id, it.entry))
+    return items
