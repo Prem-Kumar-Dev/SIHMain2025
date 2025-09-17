@@ -39,6 +39,14 @@ Try endpoints:
 curl http://localhost:8000/demo
 ```
 
+Payload notes:
+- Trains now support an optional `due_time` (integer seconds). When any train includes `due_time`, the MILP optimizer minimizes the priority-weighted sum of lateness (where lateness = max(0, last-section-entry - due_time)). If no `due_time` is present, it minimizes priority-weighted start times as before. A tiny EDD-style tie-break favors earlier due dates when multiple schedules have zero lateness.
+- Sections support optional `platform_capacity` (currently capacity=1 is enforced). When set to 1, pre-entry dwell intervals before entering that section are modeled as mutually exclusive (no overlap).
+ - Sections can define route conflicts via:
+   - `conflicts_with`: `{ "OtherSectionId": clearance_seconds }` to block simultaneous entries between two sections.
+   - `conflict_groups`: `{ "GroupId": clearance_seconds }` to block simultaneous entries among all sections sharing that group id; the max shared clearance applies between two sections.
+ - KPI OTP tolerance: endpoints `/schedule`, `/whatif`, and `/kpis` accept an `otp_tolerance` query parameter (seconds). OTP counts trains with lateness ≤ tolerance as on-time (default 0). The UI exposes an "OTP Tolerance (seconds)" control and adds a "Download Lateness CSV" option in the Runs panel.
+
 ## Run the Streamlit UI
 
 In a second terminal (API should be running):
@@ -55,6 +63,21 @@ The UI includes a Scenarios panel:
 - Save a scenario from the JSON editor to SQLite.
 - List scenarios and run a selected scenario via the API.
 - View recent runs for a scenario and inspect full run details.
+
+Responses now include a `lateness_by_train` map when `due_time` is provided in the input.
+
+Example request with `due_time`:
+```json
+{
+  "sections": [
+    { "id": "S1", "headway_seconds": 60, "traverse_seconds": 50 }
+  ],
+  "trains": [
+    { "id": "T1", "priority": 3, "planned_departure": 0, "route_sections": ["S1"], "due_time": 400 },
+    { "id": "T2", "priority": 1, "planned_departure": 0, "route_sections": ["S1"], "due_time": 200 }
+  ]
+}
+```
 
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.

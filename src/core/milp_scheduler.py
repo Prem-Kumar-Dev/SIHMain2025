@@ -5,7 +5,7 @@ import pulp
 from src.core.models import TrainRequest, Section, ScheduleItem, NetworkModel
 
 # MILP for single-section sequencing with headway and traverse time.
-# Objective: minimize weighted start times (higher priority => larger weight)
+# Objective: minimize priority-weighted lateness if any train has due_time, else weighted start times
 
 
 def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Section) -> List[ScheduleItem]:
@@ -40,6 +40,42 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
             prob += s[tj.id] >= s[ti.id] + D + H - M * (1 - y_ij)
             prob += s[ti.id] >= s[tj.id] + D + H - M * (y_ij)
 
+    # Platform capacity at entry: handle capacity=1 (simple) and capacity>1 (assignment-based)
+    cap = getattr(section, "platform_capacity", None)
+    if cap and cap >= 1:
+        # consider only trains with positive dwell before this section
+        dwell_list = []  # (idx, dwell)
+        for i, t in enumerate(trains):
+            d = int(t.dwell_before.get(section.id, 0)) if t.dwell_before else 0
+            if d > 0:
+                dwell_list.append((i, d))
+        if cap == 1:
+            for a in range(len(dwell_list)):
+                for b in range(a + 1, len(dwell_list)):
+                    i, d_i = dwell_list[a]
+                    j, d_j = dwell_list[b]
+                    pbin = pulp.LpVariable(f"pplat_{trains[i].id}_vs_{trains[j].id}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    prob += s[trains[i].id] <= s[trains[j].id] - d_j + M * (1 - pbin)
+                    prob += s[trains[j].id] <= s[trains[i].id] - d_i + M * (pbin)
+        else:
+            # create assignment binaries a_{i,p}
+            a_vars: Dict[tuple, pulp.LpVariable] = {}
+            P = list(range(cap))
+            for (i, d_i) in dwell_list:
+                for pidx in P:
+                    a_vars[(i, pidx)] = pulp.LpVariable(f"a_{trains[i].id}_p{pidx}_{section.id}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                prob += pulp.lpSum([a_vars[(i, pidx)] for pidx in P]) == 1
+            # non-overlap per platform, gated by assignment
+            for x in range(len(dwell_list)):
+                for y in range(x + 1, len(dwell_list)):
+                    i, d_i = dwell_list[x]
+                    j, d_j = dwell_list[y]
+                    for pidx in P:
+                        z = pulp.LpVariable(f"z_{trains[i].id}_vs_{trains[j].id}_p{pidx}_{section.id}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                        # Activate only if both assigned to this platform
+                        prob += s[trains[i].id] <= s[trains[j].id] - d_j + M * (1 - z) + M * (2 - a_vars[(i, pidx)] - a_vars[(j, pidx)])
+                        prob += s[trains[j].id] <= s[trains[i].id] - d_i + M * (z) + M * (2 - a_vars[(i, pidx)] - a_vars[(j, pidx)])
+
     # Block window avoidance: for each train and window [a,b), enforce
     # (s_t + D <= a) OR (s_t >= b)
     if section.block_windows:
@@ -49,8 +85,24 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
                 prob += s[t.id] + D <= int(a) + M * z
                 prob += s[t.id] >= int(b) - M * (1 - z)
 
-    # Objective: minimize weighted start times (priority weight)
-    prob += pulp.lpSum([ti.priority * s[ti.id] for ti in trains])
+    # Objective: prioritize minimizing lateness if due_time is provided
+    if any(t.due_time is not None for t in trains):
+        lateness_terms = []
+        eps_terms = []
+        for t in trains:
+            # last/only section start is s[t.id]
+            if t.due_time is not None:
+                L = pulp.LpVariable(f"L_{t.id}", lowBound=0, cat=pulp.LpContinuous)
+                # L >= s_last - due_time
+                prob += L >= s[t.id] - int(t.due_time)
+                lateness_terms.append(t.priority * L)
+            # EDD-style tiny tie-breaker: weight by inverse due_time (higher weight for earlier due dates)
+            if t.due_time is not None and t.due_time > 0:
+                coeff = 1.0 / float(int(t.due_time))
+                eps_terms.append(coeff * s[t.id])
+        prob += pulp.lpSum(lateness_terms) + 1e-3 * (pulp.lpSum(eps_terms) if eps_terms else 0)
+    else:
+        prob += pulp.lpSum([ti.priority * s[ti.id] for ti in trains])
 
     # Solve
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
@@ -122,6 +174,39 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
                 prob += s[(j, k)] >= s[(i, k)] + Dk + Hk - M * (1 - y[(i, j, k)])
                 prob += s[(i, k)] >= s[(j, k)] + Dk + Hk - M * (y[(i, j, k)])
 
+        # Platform capacity at this section's entry (generalized)
+        cap = getattr(sec, "platform_capacity", None)
+        if cap and cap >= 1:
+            # collect trains with positive dwell before this section
+            dwell_idx = []  # list of (i, d_i)
+            for i in range(n):
+                d_i = int(trains[i].dwell_before.get(sec.id, 0)) if trains[i].dwell_before else 0
+                if d_i > 0:
+                    dwell_idx.append((i, d_i))
+            if cap == 1:
+                for x in range(len(dwell_idx)):
+                    for y in range(x + 1, len(dwell_idx)):
+                        i, d_i = dwell_idx[x]
+                        j, d_j = dwell_idx[y]
+                        pbin = pulp.LpVariable(f"pplat_t{i}_t{j}_k{k}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                        prob += s[(i, k)] <= s[(j, k)] - d_j + M * (1 - pbin)
+                        prob += s[(j, k)] <= s[(i, k)] - d_i + M * (pbin)
+            else:
+                P = list(range(cap))
+                a_vars: Dict[tuple, pulp.LpVariable] = {}
+                for (i, d_i) in dwell_idx:
+                    for pidx in P:
+                        a_vars[(i, pidx)] = pulp.LpVariable(f"a_t{i}_p{pidx}_k{k}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    prob += pulp.lpSum([a_vars[(i, pidx)] for pidx in P]) == 1
+                for x in range(len(dwell_idx)):
+                    for y in range(x + 1, len(dwell_idx)):
+                        i, d_i = dwell_idx[x]
+                        j, d_j = dwell_idx[y]
+                        for pidx in P:
+                            z = pulp.LpVariable(f"z_t{i}_t{j}_p{pidx}_k{k}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                            prob += s[(i, k)] <= s[(j, k)] - d_j + M * (1 - z) + M * (2 - a_vars[(i, pidx)] - a_vars[(j, pidx)])
+                            prob += s[(j, k)] <= s[(i, k)] - d_i + M * (z) + M * (2 - a_vars[(i, pidx)] - a_vars[(j, pidx)])
+
         # Block windows for this section
         if sec.block_windows:
             for ti, t in enumerate(trains):
@@ -130,9 +215,22 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
                     prob += s[(ti, k)] + Dk <= int(a) + M * z
                     prob += s[(ti, k)] >= int(b) - M * (1 - z)
 
-    # Objective: minimize weighted completion times at last section start (approx) or sum starts
+    # Objective: minimize weighted lateness on last section entry if any due_time present
     last_idx = m - 1
-    prob += pulp.lpSum([trains[ti].priority * s[(ti, last_idx)] for ti in range(n)])
+    if any(t.due_time is not None for t in trains):
+        lateness_terms = []
+        eps_terms = []
+        for ti, t in enumerate(trains):
+            if t.due_time is not None:
+                L = pulp.LpVariable(f"L_{t.id}", lowBound=0, cat=pulp.LpContinuous)
+                prob += L >= s[(ti, last_idx)] - int(t.due_time)
+                lateness_terms.append(t.priority * L)
+            if t.due_time is not None and t.due_time > 0:
+                coeff = 1.0 / float(int(t.due_time))
+                eps_terms.append(coeff * s[(ti, last_idx)])
+        prob += pulp.lpSum(lateness_terms) + 1e-3 * (pulp.lpSum(eps_terms) if eps_terms else 0)
+    else:
+        prob += pulp.lpSum([trains[ti].priority * s[(ti, last_idx)] for ti in range(n)])
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
 
@@ -200,6 +298,39 @@ def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: Netw
                 y = pulp.LpVariable(f"y_t{ti}_k{ki}_vs_t{tj}_k{kj}_{sid}", lowBound=0, upBound=1, cat=pulp.LpBinary)
                 prob += s[(tj, kj)] >= s[(ti, ki)] + Dk + Hk - M * (1 - y)
                 prob += s[(ti, ki)] >= s[(tj, kj)] + Dk + Hk - M * (y)
+        # Platform capacity non-overlap of pre-entry dwell intervals (generalized)
+        cap = getattr(sec, "platform_capacity", None)
+        if cap and cap >= 1:
+            # collect legs with positive dwell
+            dwell_legs = []  # list of ((ti, ki), d)
+            for (ti, ki) in legs:
+                t = trains[ti]
+                d = int(t.dwell_before.get(sid, 0)) if t.dwell_before else 0
+                if d > 0:
+                    dwell_legs.append(((ti, ki), d))
+            if cap == 1:
+                for a in range(len(dwell_legs)):
+                    for b in range(a + 1, len(dwell_legs)):
+                        (ti, ki), d_i = dwell_legs[a]
+                        (tj, kj), d_j = dwell_legs[b]
+                        pbin = pulp.LpVariable(f"pplat_t{ti}_k{ki}_vs_t{tj}_k{kj}_{sid}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                        prob += s[(ti, ki)] <= s[(tj, kj)] - d_j + M * (1 - pbin)
+                        prob += s[(tj, kj)] <= s[(ti, ki)] - d_i + M * (pbin)
+            else:
+                P = list(range(cap))
+                a_vars: Dict[tuple, pulp.LpVariable] = {}
+                for (ti, ki), d in dwell_legs:
+                    for pidx in P:
+                        a_vars[((ti, ki), pidx)] = pulp.LpVariable(f"a_t{ti}_k{ki}_p{pidx}_{sid}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                    prob += pulp.lpSum([a_vars[((ti, ki), pidx)] for pidx in P]) == 1
+                for x in range(len(dwell_legs)):
+                    for y in range(x + 1, len(dwell_legs)):
+                        (ti, ki), d_i = dwell_legs[x]
+                        (tj, kj), d_j = dwell_legs[y]
+                        for pidx in P:
+                            z = pulp.LpVariable(f"z_t{ti}_k{ki}_t{tj}_k{kj}_p{pidx}_{sid}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                            prob += s[(ti, ki)] <= s[(tj, kj)] - d_j + M * (1 - z) + M * (2 - a_vars[((ti, ki), pidx)] - a_vars[((tj, kj), pidx)])
+                            prob += s[(tj, kj)] <= s[(ti, ki)] - d_i + M * (z) + M * (2 - a_vars[((ti, ki), pidx)] - a_vars[((tj, kj), pidx)])
         # Block windows
         if sec.block_windows:
             for (ti, ki) in legs:
@@ -208,12 +339,58 @@ def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: Netw
                     prob += s[(ti, ki)] + Dk <= int(a) + M * z
                     prob += s[(ti, ki)] >= int(b) - M * (1 - z)
 
-    # Objective: minimize weighted entry time into last section for each train
-    obj = []
-    for ti, t in enumerate(trains):
-        last_k = len(t.route_sections) - 1
-        obj.append(t.priority * s[(ti, last_k)])
-    prob += pulp.lpSum(obj)
+        # Route conflicts: enforce separation between entries on this section and entries on conflicting sections
+        if getattr(sec, "conflicts_with", None):
+            for other_sid, clearance in sec.conflicts_with.items():
+                if other_sid not in legs_by_section:
+                    continue
+                # impose disjunction between any leg on sid and any leg on other_sid
+                for (ti, ki) in legs:
+                    for (tj, kj) in legs_by_section[other_sid]:
+                        yconf = pulp.LpVariable(f"yconf_{sid}_t{ti}_k{ki}_vs_{other_sid}_t{tj}_k{kj}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                        prob += s[(tj, kj)] >= s[(ti, ki)] + int(clearance) - M * (1 - yconf)
+                        prob += s[(ti, ki)] >= s[(tj, kj)] + int(clearance) - M * (yconf)
+
+        # Conflict groups within this section and other sections: if two sections share a group id,
+        # and both declare a clearance for that group, enforce disjunctive separation using the max clearance.
+        if getattr(sec, "conflict_groups", None):
+            groups = sec.conflict_groups
+            for other_sid, other_legs in legs_by_section.items():
+                if other_sid == sid:
+                    continue
+                other_sec = network.section_by_id(other_sid)
+                if not getattr(other_sec, "conflict_groups", None):
+                    continue
+                shared_keys = set(groups.keys()).intersection(other_sec.conflict_groups.keys())
+                if not shared_keys:
+                    continue
+                clearance = max(int(groups[g]) for g in shared_keys)
+                for (ti, ki) in legs:
+                    for (tj, kj) in other_legs:
+                        ycg = pulp.LpVariable(f"ycg_{sid}_t{ti}_k{ki}_vs_{other_sid}_t{tj}_k{kj}", lowBound=0, upBound=1, cat=pulp.LpBinary)
+                        prob += s[(tj, kj)] >= s[(ti, ki)] + clearance - M * (1 - ycg)
+                        prob += s[(ti, ki)] >= s[(tj, kj)] + clearance - M * (ycg)
+
+    # Objective: minimize weighted lateness into last section if any due_time present
+    if any(t.due_time is not None for t in trains):
+        lateness_terms = []
+        eps_terms = []
+        for ti, t in enumerate(trains):
+            last_k = len(t.route_sections) - 1
+            if t.due_time is not None:
+                L = pulp.LpVariable(f"L_{t.id}", lowBound=0, cat=pulp.LpContinuous)
+                prob += L >= s[(ti, last_k)] - int(t.due_time)
+                lateness_terms.append(t.priority * L)
+            if t.due_time is not None and t.due_time > 0:
+                coeff = 1.0 / float(int(t.due_time))
+                eps_terms.append(coeff * s[(ti, last_k)])
+        prob += pulp.lpSum(lateness_terms) + 1e-3 * (pulp.lpSum(eps_terms) if eps_terms else 0)
+    else:
+        obj = []
+        for ti, t in enumerate(trains):
+            last_k = len(t.route_sections) - 1
+            obj.append(t.priority * s[(ti, last_k)])
+        prob += pulp.lpSum(obj)
 
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
 

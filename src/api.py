@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 
 from src.core.models import NetworkModel, Section, TrainRequest, ScheduleItem
 from src.core.solver import schedule_trains
-from src.sim.simulator import summarize_schedule
+from src.sim.simulator import summarize_schedule, lateness_kpis
 from src.sim.scenario import run_scenario, gantt_json
 from src.sim.audit import write_audit
 from src.store.db import (
@@ -29,6 +29,9 @@ class SectionIn(BaseModel):
     headway_seconds: int
     traverse_seconds: int
     block_windows: list[tuple[int, int]] | None = None
+    platform_capacity: int | None = None
+    conflicts_with: Dict[str, int] | None = None
+    conflict_groups: Dict[str, int] | None = None
 
 class TrainIn(BaseModel):
     id: str
@@ -36,6 +39,7 @@ class TrainIn(BaseModel):
     planned_departure: int
     route_sections: List[str]
     dwell_before: Dict[str, int] | None = None
+    due_time: int | None = None
 
 class ScheduleItemOut(BaseModel):
     train_id: str
@@ -62,7 +66,7 @@ async def demo(solver: str = "greedy") -> Dict[str, Any]:
     }
 
 @app.post("/schedule")
-async def schedule(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
+async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
     # Pydantic coercion helps, but we construct Section explicitly to ensure tuples
     sections = []
     for s in body.get("sections", []):
@@ -72,15 +76,31 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, An
             headway_seconds=s["headway_seconds"],
             traverse_seconds=s["traverse_seconds"],
             block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+            platform_capacity=s.get("platform_capacity"),
+            conflicts_with=s.get("conflicts_with"),
+            conflict_groups=s.get("conflict_groups"),
         )
         sections.append(section)
     trains = [TrainRequest(**t) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
     schedule_items = schedule_trains(trains, network, solver=solver)
     kpis = summarize_schedule(schedule_items)
+    # Extend with lateness KPIs if applicable
+    lk = lateness_kpis(schedule_items, trains, otp_tolerance_s=otp_tolerance)
+    kpis = {**kpis, **lk}
+    # Compute per-train lateness if due_time present
+    lateness_by_train: Dict[str, int] = {}
+    for t in trains:
+        if t.due_time is not None:
+            # find last leg entry for this train
+            last_sid = t.route_sections[-1]
+            entries = [it.entry for it in schedule_items if it.train_id == t.id and it.section_id == last_sid]
+            if entries:
+                lateness_by_train[t.id] = max(0, int(entries[0]) - int(t.due_time))
     resp = {
         "kpis": kpis,
         "schedule": [ScheduleItemOut(**vars(it)).model_dump() for it in schedule_items],
+        "lateness_by_train": lateness_by_train,
     }
     write_audit({
         "type": "schedule",
@@ -92,7 +112,7 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, An
 
 
 @app.post("/whatif")
-async def whatif(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
+async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
     # Build network and trains as in /schedule
     sections = []
     for s in body.get("sections", []):
@@ -102,6 +122,9 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]
             headway_seconds=s["headway_seconds"],
             traverse_seconds=s["traverse_seconds"],
             block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+            platform_capacity=s.get("platform_capacity"),
+            conflicts_with=s.get("conflicts_with"),
+            conflict_groups=s.get("conflict_groups"),
         )
         sections.append(section)
     trains = [TrainRequest(**t) for t in body.get("trains", [])]
@@ -109,9 +132,18 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]
 
     result = run_scenario(network, trains, solver=solver)
     items = result["schedule"]
+    # lateness map
+    lateness_by_train: Dict[str, int] = {}
+    for t in trains:
+        if t.due_time is not None:
+            last_sid = t.route_sections[-1]
+            entries = [it.entry for it in items if it.train_id == t.id and it.section_id == last_sid]
+            if entries:
+                lateness_by_train[t.id] = max(0, int(entries[0]) - int(t.due_time))
     resp = {
         "gantt": gantt_json(items),
         "count": len(items),
+        "lateness_by_train": lateness_by_train,
     }
     write_audit({
         "type": "whatif",
@@ -122,7 +154,7 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]
 
 
 @app.post("/kpis")
-async def kpis(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
+async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
     # Compute KPIs for provided scenario without returning the full schedule
     sections = []
     for s in body.get("sections", []):
@@ -138,6 +170,8 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy") -> Dict[str, Any]:
     network = NetworkModel(sections=sections)
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
+    lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
+    k = {**k, **lk}
     write_audit({
         "type": "kpis",
         "solver": solver,
@@ -164,7 +198,7 @@ async def scenarios(offset: int = 0, limit: int = 50) -> Dict[str, Any]:
 
 
 @app.post("/scenarios/{sid}/run")
-async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None = None, comment: str | None = None) -> Dict[str, Any]:
+async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None = None, comment: str | None = None, otp_tolerance: int = 0) -> Dict[str, Any]:
     s = get_scenario(sid)
     if not s:
         return {"error": "scenario not found"}
@@ -176,22 +210,35 @@ async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None 
         sections.append(Section(
             id=sec["id"], headway_seconds=sec["headway_seconds"], traverse_seconds=sec["traverse_seconds"],
             block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+            platform_capacity=sec.get("platform_capacity"),
+            conflicts_with=sec.get("conflicts_with"),
+            conflict_groups=sec.get("conflict_groups"),
         ))
     trains = [TrainRequest(**t) for t in payload.get("trains", [])]
     network = NetworkModel(sections=sections)
     items = schedule_trains(trains, network, solver=solver)
     k = summarize_schedule(items)
+    # enrich with lateness KPIs and map
+    lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
+    k = {**k, **lk}
+    lateness_by_train: Dict[str, int] = {}
+    for t in trains:
+        if t.due_time is not None and t.route_sections:
+            last_sid = t.route_sections[-1]
+            entries = [it.entry for it in items if it.train_id == t.id and it.section_id == last_sid]
+            if entries:
+                lateness_by_train[t.id] = max(0, int(entries[0]) - int(t.due_time))
     # Save run
     rid = save_run(
         scenario_id=sid,
         solver=solver,
         input_payload=payload,
         schedule=[vars(it) for it in items],
-        kpis=k,
+    kpis={**k, "lateness_by_train": lateness_by_train},
         name=name,
         comment=comment,
     )
-    return {"run_id": rid, "kpis": k}
+    return {"run_id": rid, "kpis": {**k, "lateness_by_train": lateness_by_train}}
 
 
 @app.get("/runs/{rid}")
