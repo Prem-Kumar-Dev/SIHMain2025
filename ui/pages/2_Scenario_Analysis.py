@@ -51,6 +51,67 @@ if run_btn:
         st.error(f"What-if failed: {e}")
 
 st.markdown("---")
+st.header("Model Benchmark (Baseline vs MLP vs GNN)")
+with st.expander("Benchmark Panel", expanded=False):
+    st.write("Runs /predict for each model kind and compares predicted delay minutes against proxy ground truth (current_delay_minutes field if present). This is a lightweight, same-state diagnostic, not a historical evaluation.")
+    bench_cols = st.columns([1,1,1,1])
+    run_bench = bench_cols[0].button("Run Benchmark", key="run_benchmark")
+    show_raw = bench_cols[1].toggle("Show Raw JSON", value=False, key="bench_show_raw")
+    use_auto = bench_cols[2].toggle("Include Auto", value=False, key="bench_auto")
+    sort_metric = bench_cols[3].selectbox("Sort By", ["mae", "max_error", "mean_pred"], index=0)
+    if run_bench:
+        try:
+            models = ["baseline", "mlp", "gnn"] + (["auto"] if use_auto else [])
+            results = []
+            import requests, statistics
+            truth_map = {}
+            # Build truth map (proxy) from trains
+            for tr in payload.get("trains", []):
+                tid = tr.get("id")
+                if isinstance(tid, str):
+                    truth_map[tid] = float(tr.get("current_delay_minutes", 0.0) or 0.0)
+            for mk in models:
+                try:
+                    r = requests.post(f"{api.base_url}/predict", json=payload, params={"model": mk}, timeout=api.timeout)
+                    r.raise_for_status()
+                    pj = r.json()
+                except Exception as e:
+                    pj = {"error": str(e)}
+                preds = pj.get("predicted_delay_minutes", {}) if isinstance(pj, dict) else {}
+                errors = []
+                for tid, tval in truth_map.items():
+                    p = float(preds.get(tid, 0.0) or 0.0)
+                    errors.append(abs(p - tval))
+                mae = statistics.fmean(errors) if errors else 0.0
+                max_err = max(errors) if errors else 0.0
+                mean_pred = statistics.fmean(preds.values()) if preds else 0.0
+                results.append({
+                    "model": mk,
+                    "mae": round(mae, 3),
+                    "max_error": round(max_err, 3),
+                    "mean_pred": round(mean_pred, 3),
+                    "n_trains": len(truth_map),
+                    "used": pj.get("model_used"),
+                })
+            # sort
+            results.sort(key=lambda d: d.get(sort_metric, 0.0))
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame(results))
+            if show_raw:
+                st.subheader("Raw Prediction Payloads")
+                # Re-run quickly (avoid storing large objects long-term)
+                for mk in models:
+                    try:
+                        r = requests.post(f"{api.base_url}/predict", json=payload, params={"model": mk}, timeout=api.timeout)
+                        r.raise_for_status()
+                        st.caption(f"Model={mk}")
+                        st.json(r.json())
+                    except Exception as e:
+                        st.error(f"Predict {mk} failed: {e}")
+        except Exception as e:
+            st.error(f"Benchmark failed: {e}")
+
+st.markdown("---")
 st.header("Scenarios (Persisted)")
 
 name = st.text_input("New Scenario Name", value="scenario-1")

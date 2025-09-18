@@ -26,9 +26,13 @@ from src.ai_core.predictive_engine.model import BaselineDelayRegressor
 from src.ai_core.predictive_engine.conflict_detector import detect_future_conflicts
 from src.ai_core.predictive_engine.config import PredictiveConfig
 from src.ai_core.predictive_engine.gnn.graph_builder import build_hetero_graph
-from src.ai_core.predictive_engine.gnn.model_stub import GNNDelayPredictor
-try:
-    from src.ai_core.predictive_engine.gnn.model_torch import TorchDelayPredictor
+from src.ai_core.predictive_engine.gnn.model_stub import GNNDelayPredictor as StubGNNPredictor
+try:  # prefer real lightweight GNN prototype
+    from src.ai_core.predictive_engine.gnn.model_gnn import HetGNNDelayPredictor  # type: ignore
+except Exception:
+    HetGNNDelayPredictor = None  # type: ignore
+try:  # existing MLP torch model
+    from src.ai_core.predictive_engine.gnn.model_torch import TorchDelayPredictor  # type: ignore
 except Exception:
     TorchDelayPredictor = None  # type: ignore
 from src.ai_core.predictive_engine.data_client import RailRadarClient
@@ -80,8 +84,21 @@ class ScheduleItemOut(BaseModel):
     exit: int
 
 
+class HoldAdjustment(BaseModel):
+    train_id: str
+    add_seconds: int
+
+
+class AdjustmentRequest(BaseModel):
+    state: Dict[str, Any]
+    holds: List[HoldAdjustment]
+    solver: str | None = None
+    otp_tolerance: int | None = 0
+
+
+
 @app.post("/predict")
-async def predict(body: Dict[str, Any]) -> Dict[str, Any]:
+async def predict(body: Dict[str, Any], model: str | None = None) -> Dict[str, Any]:
     """Predict per-train delay (minutes) and simple future conflicts.
 
     Input shape mirrors /schedule with optional dynamic fields like `current_delay_minutes`.
@@ -89,35 +106,46 @@ async def predict(body: Dict[str, Any]) -> Dict[str, Any]:
     """
     cfg = PredictiveConfig()
     preds: Dict[str, float]
-    if cfg.model_path:
-        # Priority 1: Torch feature-based model if available
+    choice = (model or cfg.model_kind or "auto").lower()
+    preds = {}
+    used: str | None = None
+    if choice in ("mlp", "auto"):
+        # Feature-based Torch MLP path if weights are available
         try:
-            if TorchDelayPredictor is not None:
+            if cfg.model_path and TorchDelayPredictor is not None:
                 feats = build_features_from_state(body)
                 preds = TorchDelayPredictor(cfg.model_path).predict_minutes(feats)
-            else:
-                preds = {}
         except Exception:
             preds = {}
-        if not preds:
-            # Priority 2: GNN stub path
-            try:
-                graph, idx = build_hetero_graph(body)
-                gnn = GNNDelayPredictor(model_path=cfg.model_path)
-                preds = gnn.predict_minutes(graph, idx)
-            except Exception:
-                preds = {}
-        if not preds:
-            # Fallback to baseline
-            feats = build_features_from_state(body)
-            preds = BaselineDelayRegressor().predict(feats)
-    else:
-        # Feature extraction + baseline model
+        if preds:
+            used = "mlp"
+    if not preds and choice in ("gnn", "auto"):
+        # GNN path: attempt real prototype, fallback to stub
+        try:
+            graph, idx = build_hetero_graph(body)
+            if HetGNNDelayPredictor is not None:
+                gnn = HetGNNDelayPredictor(model_path=cfg.model_path)
+            else:
+                gnn = StubGNNPredictor(model_path=cfg.model_path)
+            preds = gnn.predict_minutes(graph, idx)
+        except Exception:
+            preds = {}
+        if preds:
+            used = "gnn"
+    if not preds:
+        # Baseline fallback
         feats = build_features_from_state(body)
         preds = BaselineDelayRegressor().predict(feats)
+        used = used or "baseline"
     # Heuristic conflict detection using predicted ETAs
     conflicts = detect_future_conflicts(preds, body)
-    return {"predicted_delay_minutes": preds, "predicted_conflicts": conflicts}
+    # Provide legacy alias 'conflicts' expected by some tests/tools
+    return {
+        "predicted_delay_minutes": preds,
+        "predicted_conflicts": conflicts,
+        "conflicts": conflicts,
+        "model_used": used or choice,
+    }
 
 
 @app.post("/resolve")
@@ -130,8 +158,14 @@ async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: i
         "predicted_conflicts": [ { section_id, trains: [..] }, ... ]
       }
     """
-    state = body.get("state") or {}
-    conflicts = body.get("predicted_conflicts") or []
+    # Allow direct state payload (compat with tests calling /resolve with scenario directly)
+    if "state" in body or "predicted_conflicts" in body:
+        state = body.get("state") or {}
+        conflicts = body.get("predicted_conflicts") or body.get("conflicts") or []
+    else:
+        # Assume full scenario body is passed directly
+        state = body
+        conflicts = []
     if not isinstance(state, dict) or not state.get("trains"):
         return {"error": "missing state"}
     # Determine involved train ids
@@ -141,8 +175,41 @@ async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: i
             if isinstance(tid, str):
                 involved.add(tid)
     if not involved:
-        # Nothing to resolve; return no-op
-        return {"kpis": {"total_trains": 0, "otp_tolerance_used": int(otp_tolerance)}, "schedule": []}
+        # Without conflicts, fall back to full schedule of provided trains (acts like /schedule subset)
+        try:
+            sections = []
+            for s in state.get("sections", []):
+                bw = s.get("block_windows") or []
+                sections.append(Section(
+                    id=s["id"], headway_seconds=s["headway_seconds"], traverse_seconds=s["traverse_seconds"],
+                    block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+                    platform_capacity=s.get("platform_capacity"),
+                    conflicts_with=s.get("conflicts_with"),
+                    conflict_groups=s.get("conflict_groups"),
+                ))
+            trains = [TrainRequest(**_clean_train_dict(t)) for t in (state.get("trains") or [])]
+            network = NetworkModel(sections=sections)
+            items = schedule_trains(trains, network, solver=solver)
+            k = summarize_schedule(items)
+            lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
+            lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
+            k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
+            sched = []
+            for it in items:
+                d = ScheduleItemOut(**vars(it)).model_dump()
+                d["entry_time"], d["exit_time"] = d["entry"], d["exit"]
+                sched.append(d)
+            # KPI aliases
+            if "otp_end" in k and "on_time_percentage" not in k:
+                k["on_time_percentage"] = k.get("otp_end", 0.0)
+            if "avg_lateness" in k and "avg_delay_minutes" not in k:
+                try:
+                    k["avg_delay_minutes"] = round(float(k.get("avg_lateness", 0.0)) / 60.0, 3)
+                except Exception:
+                    k["avg_delay_minutes"] = 0.0
+            return {"kpis": k, "schedule": sched}
+        except Exception:
+            return {"kpis": {"total_trains": 0, "otp_tolerance_used": int(otp_tolerance)}, "schedule": []}
     # Filter trains
     trains_in = [t for t in (state.get("trains") or []) if t.get("id") in involved]
     # Collect referenced sections from their routes
@@ -169,7 +236,86 @@ async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: i
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
     lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
     k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
-    return {"kpis": k, "schedule": [ScheduleItemOut(**vars(it)).model_dump() for it in items]}
+    schedule_out = []
+    for it in items:
+        d = ScheduleItemOut(**vars(it)).model_dump()
+        # Add aliases for compatibility with external tests expecting entry_time/exit_time
+        d["entry_time"], d["exit_time"] = d["entry"], d["exit"]
+        schedule_out.append(d)
+    if "otp_end" in k and "on_time_percentage" not in k:
+        k["on_time_percentage"] = k.get("otp_end", 0.0)
+    if "avg_lateness" in k and "avg_delay_minutes" not in k:
+        try:
+            k["avg_delay_minutes"] = round(float(k.get("avg_lateness", 0.0)) / 60.0, 3)
+        except Exception:
+            k["avg_delay_minutes"] = 0.0
+    return {"kpis": k, "schedule": schedule_out}
+
+
+@app.post("/adjust")
+async def adjust(body: AdjustmentRequest) -> Dict[str, Any]:
+    """Apply a list of hold adjustments (departure delays) and return a new schedule.
+
+    Body shape:
+      {
+        "state": {sections: [...], trains: [...]},
+        "holds": [ {train_id, add_seconds}, ... ],
+        "solver": "greedy" | "milp" (optional),
+        "otp_tolerance": int (optional)
+      }
+
+    Behaviour:
+      - Adjusts each referenced train's planned_departure += add_seconds.
+      - Re-schedules ALL trains (simpler + ensures downstream KPIs coherent).
+      - Returns schedule + KPIs (with legacy aliases) so UI can refresh.
+    """
+    state = body.state or {}
+    holds = body.holds or []
+    solver = body.solver or "greedy"
+    otp_tolerance = int(body.otp_tolerance or 0)
+    if not isinstance(state, dict) or not state.get("trains"):
+        return {"error": "missing state"}
+    trains_in = state.get("trains") or []
+    by_id = {t.get("id"): t for t in trains_in if isinstance(t, dict)}
+    for h in holds:
+        if h.train_id in by_id:
+            try:
+                base = int(by_id[h.train_id].get("planned_departure", 0) or 0)
+                by_id[h.train_id]["planned_departure"] = base + int(h.add_seconds)
+            except Exception:
+                pass
+    # Build domain objects and reuse schedule logic
+    sections = []
+    for s in state.get("sections", []):
+        bw = s.get("block_windows") or []
+        sections.append(Section(
+            id=s["id"], headway_seconds=s["headway_seconds"], traverse_seconds=s["traverse_seconds"],
+            block_windows=[(int(a), int(b)) for a, b in bw] if bw else None,
+            platform_capacity=s.get("platform_capacity"),
+            conflicts_with=s.get("conflicts_with"),
+            conflict_groups=s.get("conflict_groups"),
+        ))
+    trains = [TrainRequest(**_clean_train_dict(t)) for t in trains_in]
+    network = NetworkModel(sections=sections)
+    items = schedule_trains(trains, network, solver=solver)
+    k = summarize_schedule(items)
+    lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
+    lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
+    k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
+    sched = []
+    for it in items:
+        d = ScheduleItemOut(**vars(it)).model_dump()
+        d["entry_time"], d["exit_time"] = d["entry"], d["exit"]
+        sched.append(d)
+    # KPI aliases
+    if "otp_end" in k and "on_time_percentage" not in k:
+        k["on_time_percentage"] = k.get("otp_end", 0.0)
+    if "avg_lateness" in k and "avg_delay_minutes" not in k:
+        try:
+            k["avg_delay_minutes"] = round(float(k.get("avg_lateness", 0.0)) / 60.0, 3)
+        except Exception:
+            k["avg_delay_minutes"] = 0.0
+    return {"kpis": k, "schedule": sched, "applied_holds": [h.model_dump() for h in holds]}
 
 
 @app.post("/live/snapshot")
@@ -285,6 +431,14 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: 
             entries = [it.entry for it in schedule_items if it.train_id == t.id and it.section_id == last_sid]
             if entries:
                 lateness_by_train[t.id] = max(0, int(entries[0]) - int(t.due_time))
+    # KPI aliases for compatibility
+    if "otp_end" in kpis and "on_time_percentage" not in kpis:
+        kpis["on_time_percentage"] = kpis.get("otp_end", 0.0)
+    if "avg_lateness" in kpis and "avg_delay_minutes" not in kpis:
+        try:
+            kpis["avg_delay_minutes"] = round(float(kpis.get("avg_lateness", 0.0)) / 60.0, 3)
+        except Exception:
+            kpis["avg_delay_minutes"] = 0.0
     resp = {
         "kpis": kpis,
         "schedule": [ScheduleItemOut(**vars(it)).model_dump() for it in schedule_items],
@@ -361,6 +515,13 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int 
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
     lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
     k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
+    if "otp_end" in k and "on_time_percentage" not in k:
+        k["on_time_percentage"] = k.get("otp_end", 0.0)
+    if "avg_lateness" in k and "avg_delay_minutes" not in k:
+        try:
+            k["avg_delay_minutes"] = round(float(k.get("avg_lateness", 0.0)) / 60.0, 3)
+        except Exception:
+            k["avg_delay_minutes"] = 0.0
     write_audit({
         "type": "kpis",
         "solver": solver,
@@ -411,6 +572,13 @@ async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None 
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
     lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
     k = {**k, **lk, "otp0_end": lk0.get("otp_end", 0.0), "otp_tolerance_used": int(otp_tolerance)}
+    if "otp_end" in k and "on_time_percentage" not in k:
+        k["on_time_percentage"] = k.get("otp_end", 0.0)
+    if "avg_lateness" in k and "avg_delay_minutes" not in k:
+        try:
+            k["avg_delay_minutes"] = round(float(k.get("avg_lateness", 0.0)) / 60.0, 3)
+        except Exception:
+            k["avg_delay_minutes"] = 0.0
     lateness_by_train: Dict[str, int] = {}
     for t in trains:
         if t.due_time is not None and t.route_sections:

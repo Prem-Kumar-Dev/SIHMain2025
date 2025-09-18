@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 
 class ApiClient:
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: Optional[str] = None, timeout: float = 120.0) -> None:
         self.base_url = base_url or os.environ.get("API_BASE", "http://localhost:8000")
         self.timeout = timeout
 
@@ -28,8 +28,9 @@ class ApiClient:
         return self._post("/live/snapshot", json=state or {}, params=params)
 
     # Predict/Resolve
-    def predict_delays(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        return self._post("/predict", json=state)
+    def predict_delays(self, state: Dict[str, Any], model: Optional[str] = None) -> Dict[str, Any]:
+        params = {"model": model} if model else None
+        return self._post("/predict", json=state, params=params)
 
     def resolve_conflicts(self, state: Dict[str, Any], conflicts: List[Dict[str, Any]], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
         body = {"state": state, "predicted_conflicts": conflicts}

@@ -15,6 +15,8 @@ class PredictiveConfig:
     weather_key: str | None = os.getenv("WEATHER_API_KEY")
     # Optional GNN model path
     model_path: str | None = os.getenv("PREDICTIVE_MODEL_PATH")
+    # Model selection: 'auto' | 'baseline' | 'mlp' | 'gnn'
+    model_kind: str = os.getenv("PREDICTIVE_MODEL_KIND", "auto").lower()
 
     @property
     def is_live_enabled(self) -> bool:
