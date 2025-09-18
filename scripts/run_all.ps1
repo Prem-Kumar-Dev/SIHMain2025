@@ -2,6 +2,7 @@ param(
     [string]$HostApi = "127.0.0.1",
     [int]$PortApi = 8000,
     [int]$UiPort = 8501,
+    [string]$PredictiveModelPath,
     [switch]$SkipTrainModel,
     [switch]$RunDemo,
     [switch]$OpenBrowser,
@@ -62,7 +63,14 @@ if (-not $SkipTrainModel) {
 }
 
 # 4) Start API server
-$apiCmd = "Set-Location '$root'; .\.venv\Scripts\Activate.ps1; uvicorn src.api:app --host $HostApi --port $PortApi --reload"
+# Build API env prelude to set PREDICTIVE_MODEL_PATH if provided
+$apiEnvPrelude = ""
+if ($PredictiveModelPath) {
+    $resolvedModel = Resolve-Path -ErrorAction SilentlyContinue $PredictiveModelPath
+    if ($resolvedModel) { $PredictiveModelPath = $resolvedModel.Path }
+    $apiEnvPrelude = "$env:PREDICTIVE_MODEL_PATH='$PredictiveModelPath';"
+}
+$apiCmd = "Set-Location '$root'; .\.venv\Scripts\Activate.ps1; $apiEnvPrelude uvicorn src.api:app --host $HostApi --port $PortApi --reload"
 if ($UseNewWindows) {
     Write-Host "[RunAll] Starting API in a new PowerShell window..."
     Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command", $apiCmd | Out-Null
@@ -104,8 +112,10 @@ if (-not (Test-PortFree -Port $UiPort)) {
 
 # Build a child command that sets env vars, activates venv, and runs Streamlit
 # Escape literal braces for format string with double braces
-$uiCmd = '& {{ $env:API_BASE=''{0}''; $env:PYTHONPATH=''{1}''; Set-Location ''{1}''; .\.venv\Scripts\Activate.ps1; streamlit run ui/app.py --server.port {2} }}'
-$uiCmd = $uiCmd -f $apiBase, $root, $UiPort
+$uiCmd = '& {{ $env:API_BASE=''{0}''; $env:PYTHONPATH=''{1}''; {3} Set-Location ''{1}''; .\.venv\Scripts\Activate.ps1; streamlit run ui/app.py --server.port {2} }}'
+$uiPrelude = ""
+if ($PredictiveModelPath) { $uiPrelude = "$env:PREDICTIVE_MODEL_PATH='" + $PredictiveModelPath + "';" }
+$uiCmd = $uiCmd -f $apiBase, $root, $UiPort, $uiPrelude
 if ($UseNewWindows) {
     Write-Host "[RunAll] Starting UI in a new PowerShell window..."
     Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit","-Command", $uiCmd | Out-Null
@@ -113,6 +123,7 @@ if ($UseNewWindows) {
     Write-Host "[RunAll] Starting UI in background process..."
     $env:API_BASE = $apiBase
     $env:PYTHONPATH = $root
+    if ($PredictiveModelPath) { $env:PREDICTIVE_MODEL_PATH = $PredictiveModelPath }
     Start-Process -FilePath $venvPython -ArgumentList "-m","streamlit","run","ui/app.py","--server.port",$UiPort -WindowStyle Hidden | Out-Null
 }
 

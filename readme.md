@@ -5,6 +5,7 @@ This project targets an intelligent decision-support system to assist section co
 ## Key Docs
 - Architecture: `architecture.md`
 - Module breakdown: `docs/modules.md`
+ - AI integration steps (Windows): `docs/AI_INTEGRATION_STEPS.md`
 
 ## Quick Start (PowerShell)
 
