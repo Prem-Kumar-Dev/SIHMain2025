@@ -130,6 +130,48 @@ pip install pytest; pytest -q tests/test_collision_resolution.py
 ```
 The test first calls `/predict` and asserts conflicts exist, then calls `/resolve` and asserts the returned schedule respects per-section headway constraints.
 
+## Benchmark Panel (Model Comparison)
+
+The Scenario Analysis page includes a Benchmark Panel to compare delay prediction models (`baseline`, `mlp`, `gnn`, and optional `auto`). It uses the current scenario payload as a single-state diagnostic (not a longitudinal validation set).
+
+Metrics per model:
+- `mae`: Mean Absolute Error vs `current_delay_minutes` (proxy ground truth).
+- `rmse`: Root Mean Squared Error (penalizes larger deviations).
+- `bias`: Mean signed error (positive = overprediction, negative = underprediction).
+- `max_error`: Largest absolute error among evaluated trains.
+- `mean_pred`: Mean predicted delay minutes.
+- `mape_pct` (optional): Mean Absolute Percentage Error (only trains with ground-truth > 0).
+- `mae_ci_low`, `mae_ci_high`: Approximate 95% confidence interval for MAE (normal approximation using sample standard deviation of absolute errors / sqrt(n)).
+- `n_trains`: Total trains in scenario; `n_eval`: Trains actually evaluated (can differ if excluding missing truth values).
+
+Controls:
+- Include Auto: Adds a run with `model=auto` to see selection logic outcome.
+- Exclude Missing Truth: When enabled (default), trains lacking explicit `current_delay_minutes` are excluded from error metrics (rather than treated as zero).
+- Include MAPE: Adds percentage error column where ground-truth delay > 0.
+- Show 95% CI: Toggles confidence interval columns.
+- Persist History File: Filename to append time-stamped benchmark results (JSON). Empty string keeps history in-memory only.
+- Show History Plot: Renders a line plot of MAE over past benchmark runs per model.
+- Clear History: Resets in-memory (and file if provided) history entries.
+
+History JSON structure (appended entries):
+```json
+{
+  "ts": 1710000000,
+  "metrics": [ { "model": "baseline", "mae": 0.5, ... }, ... ],
+  "sort": "mae",
+  "include_auto": true,
+  "n_trains": 12,
+  "exclude_missing": true,
+  "include_mape": false
+}
+```
+
+Planned enhancements:
+- Persisted multi-scenario aggregate benchmarking.
+- True labels sourced from historical arrival events instead of current snapshot delays.
+- Uncertainty intervals once models output prediction variance.
+
+
 ## Run everything (one command)
 
 We provide helper scripts to bring up the full stack (API + Streamlit UI) and optionally run the collision demo:
