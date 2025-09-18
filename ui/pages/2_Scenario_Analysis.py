@@ -1,5 +1,7 @@
 import io
 import csv
+import time
+import json as _json
 import streamlit as st
 import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
@@ -52,13 +54,32 @@ if run_btn:
 
 st.markdown("---")
 st.header("Model Benchmark (Baseline vs MLP vs GNN)")
+# Initialize benchmark history in session state
+if "benchmark_history" not in st.session_state:
+    st.session_state.benchmark_history = []  # list of {ts, model_metrics: [{model,..}], config: {...}}
 with st.expander("Benchmark Panel", expanded=False):
     st.write("Runs /predict for each model kind and compares predicted delay minutes against proxy ground truth (current_delay_minutes field if present). This is a lightweight, same-state diagnostic, not a historical evaluation.")
     bench_cols = st.columns([1,1,1,1])
     run_bench = bench_cols[0].button("Run Benchmark", key="run_benchmark")
     show_raw = bench_cols[1].toggle("Show Raw JSON", value=False, key="bench_show_raw")
     use_auto = bench_cols[2].toggle("Include Auto", value=False, key="bench_auto")
-    sort_metric = bench_cols[3].selectbox("Sort By", ["mae", "max_error", "mean_pred"], index=0)
+    sort_metric = bench_cols[3].selectbox("Sort By", ["mae", "rmse", "bias", "max_error", "mean_pred"], index=0)
+    adv_cols = st.columns([1,1,1])
+    exclude_missing = adv_cols[0].toggle("Exclude Missing Truth", value=True, key="bench_exclude_missing")
+    include_mape = adv_cols[1].toggle("Include MAPE", value=False, key="bench_include_mape", help="Only for trains with current_delay_minutes > 0")
+    show_ci = adv_cols[2].toggle("Show 95% CI", value=True, key="bench_show_ci", help="Approx normal CI on MAE using stderr = sigma/sqrt(n)")
+    hist_cols = st.columns([1,1,2])
+    persist_file = hist_cols[0].text_input("Persist History File", value="benchmark_history.json", help="If provided, history will be appended (created if missing). Leave blank to keep in-memory only.")
+    plot_history = hist_cols[1].toggle("Show History Plot", value=False, key="bench_plot_history")
+    clear_hist = hist_cols[2].button("Clear History", key="bench_clear")
+    if clear_hist:
+        st.session_state.benchmark_history = []
+        if persist_file:
+            try:
+                open(persist_file, 'w').write('[]')
+            except Exception:
+                pass
+        st.info("Benchmark history cleared.")
     if run_bench:
         try:
             models = ["baseline", "mlp", "gnn"] + (["auto"] if use_auto else [])
@@ -78,25 +99,76 @@ with st.expander("Benchmark Panel", expanded=False):
                 except Exception as e:
                     pj = {"error": str(e)}
                 preds = pj.get("predicted_delay_minutes", {}) if isinstance(pj, dict) else {}
-                errors = []
+                abs_errors = []
+                sq_errors = []
+                signed_errors = []
+                mape_terms = []
+                considered = 0
                 for tid, tval in truth_map.items():
+                    # Skip missing when exclude_missing is True and truth is 0 and not actually present in payload
+                    present = any(isinstance(tr, dict) and tr.get("id") == tid and "current_delay_minutes" in tr for tr in payload.get("trains", []))
+                    if exclude_missing and not present:
+                        continue
                     p = float(preds.get(tid, 0.0) or 0.0)
-                    errors.append(abs(p - tval))
-                mae = statistics.fmean(errors) if errors else 0.0
-                max_err = max(errors) if errors else 0.0
+                    err = p - tval
+                    signed_errors.append(err)
+                    abs_errors.append(abs(err))
+                    sq_errors.append(err * err)
+                    if include_mape and tval > 0:
+                        mape_terms.append(abs(err) / max(1e-9, tval))
+                    considered += 1
+                mae = statistics.fmean(abs_errors) if abs_errors else 0.0
+                rmse = (sum(sq_errors) / len(sq_errors)) ** 0.5 if sq_errors else 0.0
+                bias = statistics.fmean(signed_errors) if signed_errors else 0.0
+                max_err = max(abs_errors) if abs_errors else 0.0
                 mean_pred = statistics.fmean(preds.values()) if preds else 0.0
-                results.append({
+                mape_val = (statistics.fmean(mape_terms) * 100.0) if mape_terms else 0.0
+                # 95% CI for MAE (approx) -> std of abs errors / sqrt(n) * 1.96
+                if show_ci and len(abs_errors) > 1:
+                    mean_abs = mae
+                    var_abs = sum((e - mean_abs) ** 2 for e in abs_errors) / (len(abs_errors) - 1)
+                    se = (var_abs ** 0.5) / (len(abs_errors) ** 0.5)
+                    ci_low = mae - 1.96 * se
+                    ci_high = mae + 1.96 * se
+                else:
+                    ci_low = ci_high = mae
+                result_row = {
                     "model": mk,
                     "mae": round(mae, 3),
+                    "rmse": round(rmse, 3),
+                    "bias": round(bias, 3),
                     "max_error": round(max_err, 3),
                     "mean_pred": round(mean_pred, 3),
                     "n_trains": len(truth_map),
+                    "n_eval": considered,
                     "used": pj.get("model_used"),
-                })
+                }
+                if include_mape:
+                    result_row["mape_pct"] = round(mape_val, 2)
+                if show_ci:
+                    result_row["mae_ci_low"] = round(ci_low, 3)
+                    result_row["mae_ci_high"] = round(ci_high, 3)
+                results.append(result_row)
             # sort
             results.sort(key=lambda d: d.get(sort_metric, 0.0))
             import pandas as _pd
             st.dataframe(_pd.DataFrame(results))
+            # Append to history
+            ts = int(time.time())
+            hist_entry = {"ts": ts, "metrics": results, "sort": sort_metric, "include_auto": use_auto, "n_trains": len(truth_map), "exclude_missing": exclude_missing, "include_mape": include_mape}
+            st.session_state.benchmark_history.append(hist_entry)
+            # Persist to file if requested
+            if persist_file:
+                try:
+                    existing = []
+                    if os.path.exists(persist_file):
+                        with open(persist_file, 'r') as f:
+                            existing = _json.load(f) or []
+                    existing.append(hist_entry)
+                    with open(persist_file, 'w') as f:
+                        _json.dump(existing, f, indent=2)
+                except Exception as _e:
+                    st.warning(f"Failed to persist history: {_e}")
             if show_raw:
                 st.subheader("Raw Prediction Payloads")
                 # Re-run quickly (avoid storing large objects long-term)
@@ -110,6 +182,24 @@ with st.expander("Benchmark Panel", expanded=False):
                         st.error(f"Predict {mk} failed: {e}")
         except Exception as e:
             st.error(f"Benchmark failed: {e}")
+    # History visualization
+    if st.session_state.benchmark_history and plot_history:
+        import pandas as _pd
+        # Flatten per-model metrics for plotting
+        rows = []
+        for entry in st.session_state.benchmark_history:
+            for m in entry.get("metrics", []):
+                row = {"ts": entry.get("ts"), **m}
+                rows.append(row)
+        if rows:
+            dfh = _pd.DataFrame(rows)
+            try:
+                import plotly.express as _px
+                fig_hist = _px.line(dfh, x="ts", y="mae", color="model", markers=True, title="MAE Over Benchmark Runs")
+                st.plotly_chart(fig_hist, use_container_width=True)
+            except Exception as _e:
+                st.warning(f"Plot failed: {_e}")
+        st.caption(f"History entries: {len(st.session_state.benchmark_history)}")
 
 st.markdown("---")
 st.header("Scenarios (Persisted)")
