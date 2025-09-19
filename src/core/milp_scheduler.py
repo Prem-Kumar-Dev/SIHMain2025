@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import pulp
 
@@ -8,7 +8,7 @@ from src.core.models import TrainRequest, Section, ScheduleItem, NetworkModel
 # Objective: minimize priority-weighted lateness if any train has due_time, else weighted start times
 
 
-def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Section) -> List[ScheduleItem]:
+def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Section, time_limit: Optional[int] = None) -> List[ScheduleItem]:
     n = len(trains)
     if n == 0:
         return []
@@ -105,7 +105,9 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
         prob += pulp.lpSum([ti.priority * s[ti.id] for ti in trains])
 
     # Solve
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    # Solve with optional time limit
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(time_limit) if time_limit else None)
+    prob.solve(solver)
 
     # Build schedule items
     items: List[ScheduleItem] = []
@@ -118,24 +120,24 @@ def schedule_trains_single_section_milp(trains: List[TrainRequest], section: Sec
     return items
 
 
-def schedule_trains_milp(network: NetworkModel, trains: List[TrainRequest]) -> List[ScheduleItem]:
+def schedule_trains_milp(network: NetworkModel, trains: List[TrainRequest], time_limit: Optional[int] = None) -> List[ScheduleItem]:
     # If no trains, return early
     if not trains:
         return []
     route = trains[0].route_sections
     # If routes differ, use general heterogeneous-route MILP
     if any(t.route_sections != route for t in trains):
-        return schedule_trains_hetero_routes_milp(trains, network)
+        return schedule_trains_hetero_routes_milp(trains, network, time_limit=time_limit)
     # Block windows are supported below via additional disjunctive constraints
 
     if len(route) == 1:
         section = network.section_by_id(route[0])
-        return schedule_trains_single_section_milp(trains, section)
+        return schedule_trains_single_section_milp(trains, section, time_limit=time_limit)
     else:
-        return schedule_trains_multi_section_milp(trains, [network.section_by_id(sid) for sid in route])
+        return schedule_trains_multi_section_milp(trains, [network.section_by_id(sid) for sid in route], time_limit=time_limit)
 
 
-def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: List[Section]) -> List[ScheduleItem]:
+def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: List[Section], time_limit: Optional[int] = None) -> List[ScheduleItem]:
     n = len(trains)
     m = len(sections)
     prob = pulp.LpProblem("multi_section_schedule", pulp.LpMinimize)
@@ -232,7 +234,8 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
     else:
         prob += pulp.lpSum([trains[ti].priority * s[(ti, last_idx)] for ti in range(n)])
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(time_limit) if time_limit else None)
+    prob.solve(solver)
 
     # Build schedule items for each train and section
     items: List[ScheduleItem] = []
@@ -246,7 +249,7 @@ def schedule_trains_multi_section_milp(trains: List[TrainRequest], sections: Lis
     return items
 
 
-def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: NetworkModel) -> List[ScheduleItem]:
+def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: NetworkModel, time_limit: Optional[int] = None) -> List[ScheduleItem]:
     # General MILP where trains may have different routes. Constraints:
     # - Intra-train precedence across its route (with dwell)
     # - For each section, disjunctive non-overlap + headway across trains traversing that section
@@ -392,7 +395,8 @@ def schedule_trains_hetero_routes_milp(trains: List[TrainRequest], network: Netw
             obj.append(t.priority * s[(ti, last_k)])
         prob += pulp.lpSum(obj)
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=int(time_limit) if time_limit else None)
+    prob.solve(solver)
 
     # Build schedule items from variables
     items: List[ScheduleItem] = []

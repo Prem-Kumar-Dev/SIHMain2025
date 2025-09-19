@@ -127,6 +127,10 @@ with col[0]:
 with col[1]:
     otp_tolerance = st.number_input("OTP Tolerance (s)", min_value=0, value=0, step=30, key="sc_otp")
 with col[2]:
+    # Show MILP time limit when MILP selected
+    milp_time_limit = None
+    if solver == "milp":
+        milp_time_limit = st.number_input("MILP Time Limit (s)", min_value=1, max_value=600, value=15, step=5, help="Solver cutoff; schedules may be suboptimal if cut early.")
     run_btn = st.button("Run What-If", type="primary")
 
 # Initialize session storage for last what-if
@@ -140,11 +144,11 @@ if "last_whatif_error" not in st.session_state:
 if run_btn:
     with st.spinner("Running what-if scenario..."):
         try:
-            result = api.run_whatif(payload, solver=solver, otp_tolerance=int(otp_tolerance))
+            result = api.run_whatif(payload, solver=solver, otp_tolerance=int(otp_tolerance), milp_time_limit=int(milp_time_limit) if milp_time_limit else None)
             # Persist raw result
             st.session_state.last_whatif = result
             # Fetch KPIs separately (could be merged later)
-            k = api.get_kpis(payload, solver=solver, otp_tolerance=int(otp_tolerance))
+            k = api.get_kpis(payload, solver=solver, otp_tolerance=int(otp_tolerance), milp_time_limit=int(milp_time_limit) if milp_time_limit else None)
             st.session_state.last_whatif_kpis = k.get("kpis", {})
             st.session_state.last_whatif_error = None
             st.success("What-if run complete.")

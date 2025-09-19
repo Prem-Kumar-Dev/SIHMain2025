@@ -37,14 +37,23 @@ class ApiClient:
         return self._post("/resolve", json=body, params={"solver": solver, "otp_tolerance": int(otp_tolerance)})
 
     # Scheduling/KPIs
-    def run_whatif(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
-        return self._post("/whatif", json=state, params={"solver": solver, "otp_tolerance": int(otp_tolerance)})
+    def run_whatif(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
+        params = {"solver": solver, "otp_tolerance": int(otp_tolerance)}
+        if milp_time_limit is not None:
+            params["milp_time_limit"] = int(milp_time_limit)
+        return self._post("/whatif", json=state, params=params)
 
-    def get_kpis(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
-        return self._post("/kpis", json=state, params={"solver": solver, "otp_tolerance": int(otp_tolerance)})
+    def get_kpis(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
+        params = {"solver": solver, "otp_tolerance": int(otp_tolerance)}
+        if milp_time_limit is not None:
+            params["milp_time_limit"] = int(milp_time_limit)
+        return self._post("/kpis", json=state, params=params)
 
-    def schedule(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
-        return self._post("/schedule", json=state, params={"solver": solver, "otp_tolerance": int(otp_tolerance)})
+    def schedule(self, state: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
+        params = {"solver": solver, "otp_tolerance": int(otp_tolerance)}
+        if milp_time_limit is not None:
+            params["milp_time_limit"] = int(milp_time_limit)
+        return self._post("/schedule", json=state, params=params)
 
     # Persistence
     def save_scenario(self, payload: Dict[str, Any], name: str) -> Dict[str, Any]:
