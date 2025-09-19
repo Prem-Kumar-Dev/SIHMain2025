@@ -21,8 +21,105 @@ api = ApiClient()
 
 st.title("Scenario Analysis")
 
+# Large Scenario Utilities
+util_cols = st.columns([1,1,1,2])
+with util_cols[0]:
+    up_file = st.file_uploader("Load Scenario JSON", type=["json"], help="Upload a scenario file generated externally or via the generator below.")
+    if up_file is not None:
+        try:
+            import json as _jsonu
+            data = _jsonu.loads(up_file.read())
+            if isinstance(data, dict) and data.get("sections") and data.get("trains"):
+                set_state_payload(data)
+                st.success(f"Loaded scenario: {len(data['sections'])} sections, {len(data['trains'])} trains.")
+            else:
+                st.error("Invalid scenario structure (expect keys: sections, trains).")
+        except Exception as e:
+            st.error(f"Failed to parse JSON: {e}")
+with util_cols[1]:
+    if st.button("Reset to Default", help="Reset scenario editor to a minimal default payload"):
+        set_state_payload(default_payload())
+        st.experimental_rerun()
+with util_cols[2]:
+    with st.expander("Generate Synthetic Scenario", expanded=False):
+        g_cols = st.columns(4)
+        g_tr = g_cols[0].number_input("Trains", min_value=1, max_value=5000, value=200, step=50, help="Total trains to synthesize")
+        g_sec = g_cols[1].number_input("Sections", min_value=1, max_value=1000, value=40, step=10, help="Infrastructure sections")
+        g_route = g_cols[2].number_input("Avg Route Len", min_value=1, max_value=200, value=8, step=1, help="Approx mean contiguous route length")
+        g_stagger = g_cols[3].number_input("Stagger (s)", min_value=0, max_value=3600, value=300, step=30, help="Max random extra departure seconds")
+        g_seed = st.number_input("Seed", min_value=0, max_value=999999, value=42, step=1)
+        g_due = st.toggle("Include Due Times", value=True, help="Assign due_time to ~50% of trains")
+        gen_btn = st.button("Generate Scenario", key="gen_large_scenario")
+        if gen_btn:
+            import random, math
+            random.seed(int(g_seed))
+            sections = []
+            for i in range(int(g_sec)):
+                sections.append({
+                    "id": f"S{i+1}",
+                    "headway_seconds": random.randint(60, 240),
+                    "traverse_seconds": random.randint(90, 300),
+                    "block_windows": []
+                })
+            sec_ids = [s['id'] for s in sections]
+            trains = []
+            for t in range(int(g_tr)):
+                base_dep = t * 30 + random.randint(0, int(g_stagger))
+                if g_route >= len(sec_ids):
+                    route = sec_ids[:]
+                else:
+                    length = max(1, min(len(sec_ids), int(random.gauss(g_route, 1))))
+                    start = random.randint(0, max(0, len(sec_ids) - length))
+                    route = sec_ids[start:start+length]
+                tr = {
+                    "id": f"T{t+1}",
+                    "priority": random.randint(1,3),
+                    "planned_departure": base_dep,
+                    "route_sections": route
+                }
+                if g_due and random.random() < 0.5:
+                    est = base_dep + sum(random.randint(90, 240) for _ in route)
+                    tr["due_time"] = est + random.randint(-120, 180)
+                trains.append(tr)
+            payload_gen = {"sections": sections, "trains": trains}
+            set_state_payload(payload_gen)
+            st.success(f"Generated scenario with {len(sections)} sections & {len(trains)} trains.")
+        # Download current generated scenario if available
+        if st.session_state.get('payload') and isinstance(st.session_state.payload, dict):
+            import json as _jsond
+            st.download_button(
+                "Download Current Scenario JSON",
+                data=_jsond.dumps(st.session_state.payload, indent=2),
+                file_name=f"scenario_{len(st.session_state.payload.get('trains', []))}x{len(st.session_state.payload.get('sections', []))}.json",
+                mime="application/json"
+            )
+with util_cols[3]:
+    filt_exp = st.expander("Plot Filters", expanded=False)
+    with filt_exp:
+        max_plot_trains = st.number_input("Max Trains to Plot (Gantt)", min_value=10, max_value=2000, value=300, step=10, help="Limit number of trains shown to keep Plotly responsive.")
+        train_prefix = st.text_input("Train ID Prefix Filter", value="", help="If set, only trains whose id starts with this prefix are used in Gantt.")
+        st.session_state["plot_filters"] = {"max_trains": int(max_plot_trains), "prefix": train_prefix.strip()}
+
 payload = editor("Scenario JSON", get_state_payload())
 set_state_payload(payload)
+
+# Quick sample loader for debugging
+sample_col = st.columns([1,1,6])
+with sample_col[0]:
+    if st.button("Load Sample", help="Load a minimal sample scenario"):
+        sample = {
+            "sections": [
+                {"id": "S1", "headway_seconds": 120, "traverse_seconds": 100},
+                {"id": "S2", "headway_seconds": 120, "traverse_seconds": 140}
+            ],
+            "trains": [
+                {"id": "A", "priority": 1, "planned_departure": 0, "route_sections": ["S1", "S2"]},
+                {"id": "B", "priority": 2, "planned_departure": 60, "route_sections": ["S1", "S2"]},
+                {"id": "C", "priority": 3, "planned_departure": 120, "route_sections": ["S1"]}
+            ]
+        }
+        set_state_payload(sample)
+        st.experimental_rerun()
 
 col = st.columns([1, 1, 2])
 with col[0]:
@@ -32,25 +129,106 @@ with col[1]:
 with col[2]:
     run_btn = st.button("Run What-If", type="primary")
 
+# Initialize session storage for last what-if
+if "last_whatif" not in st.session_state:
+    st.session_state.last_whatif = None
+if "last_whatif_kpis" not in st.session_state:
+    st.session_state.last_whatif_kpis = None
+if "last_whatif_error" not in st.session_state:
+    st.session_state.last_whatif_error = None
+
 if run_btn:
-    try:
-        result = api.run_whatif(payload, solver=solver, otp_tolerance=int(otp_tolerance))
-        gantt = result.get("gantt", [])
-        lateness_map = result.get("lateness_by_train", {})
-        # last section mapping from payload
-        last_section_map = {}
-        for tr in payload.get("trains", []):
-            if isinstance(tr, dict) and tr.get("route_sections"):
-                last_section_map[tr.get("id")] = tr["route_sections"][-1]
-        if gantt:
-            st.plotly_chart(render_gantt(gantt, lateness_map, last_section_map), use_container_width=True)
+    with st.spinner("Running what-if scenario..."):
+        try:
+            result = api.run_whatif(payload, solver=solver, otp_tolerance=int(otp_tolerance))
+            # Persist raw result
+            st.session_state.last_whatif = result
+            # Fetch KPIs separately (could be merged later)
+            k = api.get_kpis(payload, solver=solver, otp_tolerance=int(otp_tolerance))
+            st.session_state.last_whatif_kpis = k.get("kpis", {})
+            st.session_state.last_whatif_error = None
+            st.success("What-if run complete.")
+        except Exception as e:
+            st.session_state.last_whatif_error = str(e)
+            st.error(f"What-if failed: {e}")
+
+# Render last what-if result if available
+if st.session_state.last_whatif:
+    result = st.session_state.last_whatif
+    gantt = result.get("gantt", [])
+    lateness_map = result.get("lateness_by_train", {})
+    last_section_map = {}
+    for tr in payload.get("trains", []):
+        if isinstance(tr, dict) and tr.get("route_sections"):
+            last_section_map[tr.get("id")] = tr["route_sections"][-1]
+    st.subheader("Latest What-If Schedule")
+    if gantt:
+        # Apply plot filters
+        pf = st.session_state.get("plot_filters", {})
+        max_tr = pf.get("max_trains") or 1000
+        pref = pf.get("prefix") or ""
+        if pref:
+            gantt_f = [g for g in gantt if str(g.get("train", "")).startswith(pref)]
         else:
-            st.warning("No schedule returned")
-        # KPIs
-        k = api.get_kpis(payload, solver=solver, otp_tolerance=int(otp_tolerance))
-        render_kpis(k.get("kpis", {}))
-    except Exception as e:
-        st.error(f"What-if failed: {e}")
+            gantt_f = gantt
+        # Cap number of trains by first-seen ordering
+        seen = []
+        allowed_trains = set()
+        for g in gantt_f:
+            tid = g.get("train")
+            if tid not in allowed_trains:
+                seen.append(tid)
+                allowed_trains.add(tid)
+            if len(seen) >= max_tr:
+                break
+        if len(allowed_trains) < len({g.get('train') for g in gantt_f}):
+            st.caption(f"Showing first {len(allowed_trains)} trains (filtered by prefix/pagination).")
+        gantt_f = [g for g in gantt_f if g.get("train") in allowed_trains]
+        fig = render_gantt(gantt_f, lateness_map, last_section_map)
+        # Detect zero visible bars (all zero-duration) -> Plotly may not show them clearly
+        zero_durations = sum(1 for g in gantt if (g.get("end") == g.get("start")))
+        st.plotly_chart(fig, use_container_width=True)
+        if zero_durations == len(gantt):
+            st.info("All schedule intervals have zero duration (start == end); bars may appear invisible. Consider verifying traverse/headway data.")
+    else:
+        reason = result.get("reason") or "No schedule returned in last what-if result."
+        st.warning(reason)
+        st.caption(f"What-If returned 0 gantt items; trains={len(payload.get('trains', []))} sections={len(payload.get('sections', []))}")
+        # Attempt fallback schedule to help user
+        try:
+            fallback = api.schedule(payload, solver=solver, otp_tolerance=int(otp_tolerance))
+            f_sched = fallback.get("schedule", [])
+            if f_sched:
+                st.caption("Fallback full schedule (from /schedule):")
+                import pandas as _pd
+                st.dataframe(_pd.DataFrame(f_sched))
+        except Exception as _e:
+            st.info(f"Fallback schedule failed: {_e}")
+    # Show tabular schedule from what-if if present
+    sched_items = result.get("schedule") or []
+    if sched_items:
+        import pandas as _pd
+        st.caption("What-If Schedule Items")
+        st.dataframe(_pd.DataFrame(sched_items))
+    if st.session_state.last_whatif_kpis:
+        render_kpis(st.session_state.last_whatif_kpis)
+    with st.expander("Raw What-If Response & KPIs"):
+        st.json({"whatif": st.session_state.last_whatif, "kpis": st.session_state.last_whatif_kpis})
+    # Diagnostics
+    with st.expander("Diagnostics"):
+        trains = payload.get("trains", []) if isinstance(payload, dict) else []
+        sections = payload.get("sections", []) if isinstance(payload, dict) else []
+        st.write({
+            "train_count": len(trains),
+            "section_count": len(sections),
+            "gantt_items": len(gantt),
+            "whatif_schedule_items": len(result.get("schedule") or []),
+            "lateness_map_size": len(lateness_map),
+        })
+elif st.session_state.last_whatif_error:
+    st.warning(f"Last what-if error: {st.session_state.last_whatif_error}")
+else:
+    st.caption("Run a What-If to see schedule and KPIs here.")
 
 st.markdown("---")
 st.header("Model Benchmark (Baseline vs MLP vs GNN)")
