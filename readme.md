@@ -188,6 +188,125 @@ Notes:
 - The script will create `.venv`, install `requirements.txt`, and train a delay model if `data/delay_model.pt` is missing (requires `scripts/train_delay_model.ps1`). Use `-SkipTrainModel` to skip training.
 - `-UseNewWindows` starts API and UI in separate PowerShell windows; omit it to run them as background processes.
 - `-RunDemo` executes the collision demo after the API is up.
+
+## Large Scenario Generation & Performance Benchmarking
+
+To stress-test scheduling performance on larger datasets (hundreds of trains / dozens of sections) two helper scripts are provided.
+
+### 1. Generate a Large Synthetic Scenario
+
+`scripts/generate_large_scenario.py` creates a JSON scenario with configurable counts:
+
+```powershell
+python scripts/generate_large_scenario.py -Trains 200 -Sections 40 -RouteLen 8 -IncludeDue -Out scenario_200x40.json
+```
+
+Parameters:
+- `-Trains`: number of trains (e.g. 50, 200, 500)
+- `-Sections`: number of linear sections
+- `-RouteLen`: approximate mean contiguous route length per train
+- `-Stagger`: maximum random extra departure seconds (default 300)
+- `-IncludeDue`: include `due_time` for ~50% of trains
+- `-Seed`: RNG seed for reproducibility
+
+You can then run it through the API:
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/schedule" -Body (Get-Content scenario_200x40.json -Raw) -ContentType 'application/json' | ConvertTo-Json -Depth 4
+```
+
+### 2. Benchmark Scheduler Throughput
+
+`scripts/benchmark_scheduling.py` measures raw scheduling time in-process (avoids HTTP overhead):
+
+```powershell
+python scripts/benchmark_scheduling.py -Min 50 -Max 250 -Step 50 -Sections 20 -RouteLen 6 -Repeats 5 -Solver greedy
+```
+
+Sample output:
+```
+Trains=50  elapsed=   4.12 ms items=285  horizon=5421  solver=greedy
+...
+Summary (mean ms per train count)
+  50:    4.05 ms
+ 100:    8.73 ms
+ 150:   13.42 ms
+ 200:   19.85 ms
+ 250:   26.91 ms
+```
+
+Emit JSON rows for spreadsheet ingestion:
+```powershell
+python scripts/benchmark_scheduling.py -Min 50 -Max 250 -Step 50 -Sections 20 -RouteLen 6 -Repeats 3 -Solver greedy -Json > bench.jsonl
+```
+
+### 3. Scaling Notes
+
+- Greedy scheduler now uses binary search for insertion and localized conflict scanning (amortized near O(log N) per placement under moderate contention).
+- MILP solver remains suitable only for small instances (≤ ~15 trains) due to quadratic+ binary variable growth.
+- For >1000 trains consider partitioned scheduling (by corridor/time window) + merge heuristics.
+
+### 4. Quick Ad-Hoc Test (Inline)
+
+```powershell
+python - <<'PY'
+from scripts.generate_large_scenario import build_sections, build_trains
+from src.core.models import NetworkModel, TrainRequest
+from src.core.solver import schedule_trains
+import time, random
+random.seed(1)
+sections = build_sections(25)
+net = NetworkModel([__import__('src.core.models', fromlist=['Section']).Section(**s) for s in sections])
+trains_raw = build_trains(300, [s['id'] for s in sections], 7, 300, False)
+trains = [TrainRequest(**t) for t in trains_raw]
+t0 = time.perf_counter(); sched = schedule_trains(trains, net, solver='greedy'); dt = (time.perf_counter()-t0)*1000
+print(f"Scheduled {len(trains)} trains -> {len(sched)} legs in {dt:.2f} ms")
+PY
+```
+
+This should complete in tens of milliseconds on a modern CPU.
+
+### 5. GUI Support for Large Scenarios
+
+Both the Scenario Analysis and Live Dashboard pages now support:
+- File upload (`Load Scenario JSON`) to replace the active scenario with a large dataset.
+- Synthetic scenario generation (Scenario Analysis only) with controls for trains, sections, average route length, seed, and optional due times.
+- Plot filters: limit the maximum number of trains rendered in Gantt or time-distance charts and optionally restrict by train ID prefix to keep the UI responsive.
+
+Usage tips:
+1. Generate or upload a large scenario (e.g. 500–1000 trains).
+2. Set `Max Trains to Plot` to a moderate value (e.g. 200–300) when exploring visually.
+3. Use prefix filters (e.g. `T1` or `T10`) to focus on subsets.
+4. Run scheduling or what-if operations; KPIs compute on the full dataset, while visualization respects filters.
+
+If Plotly becomes sluggish, reduce the train cap or filter by prefix. The backend greedy scheduler handles large input efficiently after the insertion & conflict-scan optimizations.
+
+### 6. MILP Time Limit & Fallback (New)
+
+The MILP solver is now invoked with an optional time limit (`milp_time_limit` query parameter on scheduling endpoints and a UI control on the Scenario Analysis page).
+
+Usage examples:
+```
+POST /schedule?solver=milp&milp_time_limit=15
+POST /whatif?solver=milp&milp_time_limit=20
+```
+
+UI: When you select `milp` in the Scenario Analysis page an input `MILP Time Limit (s)` appears (default 15s). This guards against solver timeouts that would otherwise hit the HTTP client timeout (previously 120s in the UI client).
+
+Behavior:
+1. If the MILP finishes within the limit with an optimal/feasible solution, that schedule is returned.
+2. If the time limit is reached, the underlying CBC solver returns the best incumbent found so far (if any). We accept and materialize variable values directly; if for any reason the solver raises an exception, we fall back to the greedy scheduler transparently.
+3. If the instance is too large (variable explosion), setting a smaller time limit (e.g. 5–10s) provides early feasible solutions, or switch to `greedy` for large-scale exploration.
+
+Recommendations:
+- Use MILP for small tactical scenarios (≤ 12–15 trains, limited branching conflicts) where optimal precedence matters.
+- For scenario generation / benchmarking at scale, prefer the greedy solver.
+- Start with `milp_time_limit=10` and adjust; higher limits give diminishing returns after initial feasible solution is found.
+
+Future Work:
+- Expose solver status / gap in API response.
+- Provide a hybrid mode: MILP for a sliding window horizon, greedy for the rest.
+- Integrate CP-SAT alternative for richer constraint constructs.
+
 ## Next Steps
 - Replace greedy with MILP/CP for higher optimality.
 - Add disruption handling and rapid re-optimization.

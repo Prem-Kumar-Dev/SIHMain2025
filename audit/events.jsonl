@@ -87,3 +87,12 @@
 {"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 10, "makespan": 4198, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 1675.142857142857, "total_lateness": 11726.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 27.919}, "count": 40}
 {"type": "whatif", "solver": "greedy", "count": 303}
 {"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 40, "makespan": 14698, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 4707.473684210527, "total_lateness": 89442.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 78.458}, "count": 303}
+{"type": "whatif", "solver": "milp", "count": 40}
+{"type": "whatif", "solver": "greedy", "count": 40}
+{"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 10, "makespan": 4198, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 1563.1666666666667, "total_lateness": 9379.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 26.053}, "count": 40}
+{"type": "whatif", "solver": "milp", "count": 40}
+{"type": "kpis", "solver": "milp", "kpis": {"total_trains": 10, "makespan": 4263, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 684.1666666666666, "total_lateness": 4105.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 11.403}, "count": 40}
+{"type": "whatif", "solver": "greedy", "count": 1503}
+{"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 200, "makespan": 24049, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 7843.789473684211, "total_lateness": 745160.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 130.73}, "count": 1503}
+{"type": "whatif", "solver": "greedy", "count": 350}
+{"type": "kpis", "solver": "greedy", "kpis": {"total_trains": 50, "makespan": 22109, "utilization": 100, "conflicts": 0, "otp_end": 0.0, "avg_lateness": 9460.964285714286, "total_lateness": 264907.0, "otp0_end": 0.0, "otp_tolerance_used": 0, "on_time_percentage": 0.0, "avg_delay_minutes": 157.683}, "count": 350}

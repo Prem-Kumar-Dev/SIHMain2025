@@ -149,7 +149,7 @@ async def predict(body: Dict[str, Any], model: str | None = None) -> Dict[str, A
 
 
 @app.post("/resolve")
-async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
+async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
     """Resolve predicted conflicts by scheduling only affected trains and sections.
 
     Body:
@@ -189,7 +189,7 @@ async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: i
                 ))
             trains = [TrainRequest(**_clean_train_dict(t)) for t in (state.get("trains") or [])]
             network = NetworkModel(sections=sections)
-            items = schedule_trains(trains, network, solver=solver)
+            items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
             k = summarize_schedule(items)
             lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
             lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
@@ -231,7 +231,7 @@ async def resolve(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: i
         ))
     trains = [TrainRequest(**_clean_train_dict(t)) for t in trains_in]
     network = NetworkModel(sections=sections)
-    items = schedule_trains(trains, network, solver=solver)
+    items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
     k = summarize_schedule(items)
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
     lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
@@ -399,7 +399,7 @@ async def demo(solver: str = "greedy") -> Dict[str, Any]:
     }
 
 @app.post("/schedule")
-async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
+async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
     # Pydantic coercion helps, but we construct Section explicitly to ensure tuples
     sections = []
     for s in body.get("sections", []):
@@ -416,7 +416,7 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: 
         sections.append(section)
     trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
-    schedule_items = schedule_trains(trains, network, solver=solver)
+    schedule_items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
     kpis = summarize_schedule(schedule_items)
     # Extend with lateness KPIs if applicable
     lk = lateness_kpis(schedule_items, trains, otp_tolerance_s=otp_tolerance)
@@ -454,7 +454,7 @@ async def schedule(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: 
 
 
 @app.post("/whatif")
-async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
+async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
     # Build network and trains as in /schedule
     sections = []
     for s in body.get("sections", []):
@@ -472,7 +472,9 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: in
     trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
 
-    result = run_scenario(network, trains, solver=solver)
+    # run_scenario currently doesn't accept time limit; call schedule_trains directly for control
+    items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
+    result = {"schedule": items}
     items = result["schedule"]
     # lateness map
     lateness_by_train: Dict[str, int] = {}
@@ -486,6 +488,11 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: in
         "gantt": gantt_json(items),
         "count": len(items),
         "lateness_by_train": lateness_by_train,
+        "reason": None if items else "No schedule items produced (check sections/trains input)",
+        "schedule": [
+            {**ScheduleItemOut(**vars(it)).model_dump(), "entry_time": it.entry, "exit_time": it.exit}
+            for it in items
+        ],
     }
     write_audit({
         "type": "whatif",
@@ -496,7 +503,7 @@ async def whatif(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: in
 
 
 @app.post("/kpis")
-async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0) -> Dict[str, Any]:
+async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
     # Compute KPIs for provided scenario without returning the full schedule
     sections = []
     for s in body.get("sections", []):
@@ -510,7 +517,7 @@ async def kpis(body: Dict[str, Any], solver: str = "greedy", otp_tolerance: int 
         sections.append(section)
     trains = [TrainRequest(**_clean_train_dict(t)) for t in body.get("trains", [])]
     network = NetworkModel(sections=sections)
-    items = schedule_trains(trains, network, solver=solver)
+    items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
     k = summarize_schedule(items)
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
     lk0 = lateness_kpis(items, trains, otp_tolerance_s=0)
@@ -548,7 +555,7 @@ async def scenarios(offset: int = 0, limit: int = 50) -> Dict[str, Any]:
 
 
 @app.post("/scenarios/{sid}/run")
-async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None = None, comment: str | None = None, otp_tolerance: int = 0) -> Dict[str, Any]:
+async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None = None, comment: str | None = None, otp_tolerance: int = 0, milp_time_limit: int | None = None) -> Dict[str, Any]:
     s = get_scenario(sid)
     if not s:
         return {"error": "scenario not found"}
@@ -566,7 +573,7 @@ async def run_saved_scenario(sid: int, solver: str = "greedy", name: str | None 
         ))
     trains = [TrainRequest(**_clean_train_dict(t)) for t in payload.get("trains", [])]
     network = NetworkModel(sections=sections)
-    items = schedule_trains(trains, network, solver=solver)
+    items = schedule_trains(trains, network, solver=solver, milp_time_limit=milp_time_limit)
     k = summarize_schedule(items)
     # enrich with lateness KPIs and map, plus otp0 and tolerance used
     lk = lateness_kpis(items, trains, otp_tolerance_s=otp_tolerance)
